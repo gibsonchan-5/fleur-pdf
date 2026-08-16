@@ -1,0 +1,28 @@
+# Dependency directory
+node_modules/
+
+# Build output
+main.js
+*.js.map
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Development files
+test-vault/
+test-doc.md
+debug-*.js
+DEPLOY.md
+STATUS.md

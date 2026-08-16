@@ -1,0 +1,31 @@
+{
+  "name": "fleur-pdf",
+  "version": "0.1.0",
+  "description": "智能 PDF 阅读与标注插件",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "version": "node version-bump.mjs && git add manifest.json versions.json"
+  },
+  "keywords": [
+    "obsidian",
+    "pdf",
+    "annotation",
+    "highlight",
+    "ai"
+  ],
+  "author": "JC",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "0.17.3",
+    "obsidian": "latest",
+    "tslib": "2.4.0",
+    "typescript": "4.7.4"
+  },
+  "dependencies": {
+    "monkey-around": "^3.0.0"
+  }
+}
