@@ -323,15 +323,6 @@ export class SidebarView extends ItemView {
     textarea.value = ann.comment || '';
     textarea.placeholder = '写批注…';
     textarea.addClass('fleur-sidebar-textarea');
-    // 自动撑高 textarea 以显示全部内容
-    window.setTimeout(() => {
-      textarea.style.setProperty('height', 'auto');
-      textarea.style.setProperty('height', Math.min(Math.max(textarea.scrollHeight, 120), 400) + 'px');
-    }, 10);
-    textarea.addEventListener('input', () => {
-      textarea.style.setProperty('height', 'auto');
-      textarea.style.setProperty('height', Math.min(Math.max(textarea.scrollHeight, 120), 400) + 'px');
-    });
 
     const btnRow = wrap.createDiv();
     btnRow.addClass('fleur-sidebar-editor-btn-row');

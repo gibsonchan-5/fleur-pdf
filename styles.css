@@ -938,8 +938,11 @@
   position: relative;
 }
 
-.fleur-sidebar-textarea-auto {
+.fleur-sidebar-textarea {
   height: auto;
+  min-height: 120px;
+  max-height: 400px;
+  overflow-y: auto;
 }
 
 .fleur-comment-bubble {
@@ -948,8 +951,4 @@
 
 .fleur-comment-quote-bar {
   background: var(--fleur-hl-color, var(--interactive-accent));
-}
-
-.fleur-sidebar-textarea {
-  height: auto;
 }
