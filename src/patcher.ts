@@ -390,8 +390,10 @@ export class PDFPatcher {
     // 清理目标文本：去除首尾的引号、空白、标点
     const cleaned = targetText
       .trim()
-      .replace(/^[\s\p{P}]+/u, '')  // 开头：空白 + 所有标点（含引号）
-      .replace(/[\s\p{P}]+$/u, '')  // 结尾：空白 + 所有标点
+      .replace(/^\s+/, '')      // 去除开头空白
+      .replace(/\s+$/, '')      // 去除结尾空白
+      .replace(/^\p{P}+/u, '')  // 去除开头标点
+      .replace(/\p{P}+$/u, '')  // 去除结尾标点
       .trim();
     if (!cleaned) return [];
 
@@ -561,8 +563,7 @@ export class PDFPatcher {
     segments.forEach((seg) => {
       this.wrapAndStyle(seg, (el) => {
         el.style.setProperty('background-color', color);
-        el.style.setProperty('border-radius', '2px');
-        el.style.setProperty('-webkit-box-decoration-break', 'clone');
+        el.addClass('fleur-highlight');
         el.dataset['annId'] = annId;
       });
     });
@@ -581,12 +582,10 @@ export class PDFPatcher {
 
     segments.forEach((seg) => {
       this.wrapAndStyle(seg, (el) => {
-        const textDecorationValue = style === 'wavy'
+        el.style.setProperty('text-decoration', style === 'wavy'
           ? `underline wavy ${color}`
-          : `underline ${style} ${color}`;
-        el.style.setProperty('text-decoration', textDecorationValue);
-        el.style.setProperty('text-underline-offset', '3px');
-        el.style.setProperty('-webkit-box-decoration-break', 'clone');
+          : `underline ${style} ${color}`);
+        el.addClass('fleur-underline');
         el.dataset['annId'] = annId;
       });
     });
@@ -632,8 +631,7 @@ export class PDFPatcher {
     segments.forEach((seg) => {
       const span = this.wrapAndStyle(seg, (el) => {
         el.style.setProperty('background-color', hlColor);
-        el.style.setProperty('border-radius', '2px');
-        el.style.setProperty('-webkit-box-decoration-break', 'clone');
+        el.addClass('fleur-highlight');
       });
       if (span) styledSpans.push(span);
     });
@@ -651,7 +649,7 @@ export class PDFPatcher {
     quoteBlock.addClass('fleur-comment-dialog-quote');
     const quoteBar = quoteBlock.createDiv();
     quoteBar.addClass('fleur-comment-dialog-quote-bar');
-    quoteBar.style.setProperty('background', hlColor);
+    quoteBar.style.setProperty('--fleur-hl-color', hlColor);
     const quoteText = quoteBlock.createDiv();
     quoteText.addClass('fleur-comment-dialog-quote-text');
     quoteText.textContent = text;
@@ -725,7 +723,7 @@ export class PDFPatcher {
     comment: string, anchorSpan: HTMLElement, pageEl: HTMLElement, annId?: string
   ) {
     if (getComputedStyle(pageEl).position === 'static') {
-      pageEl.style.setProperty('position', 'relative');
+      pageEl.addClass('fleur-page-relative');
     }
 
     const pageRect = pageEl.getBoundingClientRect();

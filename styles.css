@@ -920,3 +920,36 @@
 .is-hidden {
   display: none;
 }
+
+/* Annotation element styles */
+.fleur-highlight {
+  border-radius: 2px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.fleur-underline {
+  text-underline-offset: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.fleur-page-relative {
+  position: relative;
+}
+
+.fleur-sidebar-textarea-auto {
+  height: auto;
+}
+
+.fleur-comment-bubble {
+  position: absolute;
+}
+
+.fleur-comment-quote-bar {
+  background: var(--fleur-hl-color, var(--interactive-accent));
+}
+
+.fleur-sidebar-textarea {
+  height: auto;
+}

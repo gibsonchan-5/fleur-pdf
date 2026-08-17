@@ -6,7 +6,7 @@ import { AIService } from './ai-service';
 
 export const VIEW_TYPE_SIDEBAR = 'fleur-sidebar';
 
-/** Create an SVG element (SVG tags aren't in HTMLElementTagNameMap) */
+/** Create an SVG element (SVG tags aren't in HTMLElementTagNameMap, so createElementNS is required) */
 function createSvgEl(parent: Node, tag: string, attrs?: Record<string, string>): SVGElement {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   if (attrs) {
@@ -20,7 +20,7 @@ function createSvgEl(parent: Node, tag: string, attrs?: Record<string, string>):
 
 /** Helper: create an SVG element with children */
 function appendSvg(
-  container: HTMLElement,
+  container: Node,
   attrs: Record<string, string>,
   children: Array<{ tag: string; attrs: Record<string, string> }>
 ): SVGElement {

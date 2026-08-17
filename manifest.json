@@ -1,9 +1,9 @@
 {
-  "id": "fleur-pdf",
-  "name": "FleurPDF",
-  "version": "1.0.2",
-  "minAppVersion": "1.4.0",
-  "description": "Smart PDF reading and annotation plugin with AI-powered features.",
-  "author": "gibsonchan-5",
-  "isDesktopOnly": false
+	"id": "fleur-pdf",
+	"name": "FleurPDF",
+	"version": "1.0.3",
+	"minAppVersion": "1.4.0",
+	"description": "Smart PDF reading and annotation plugin with AI-powered features.",
+	"author": "gibsonchan-5",
+	"isDesktopOnly": false
 }

@@ -6,7 +6,7 @@ import { Notice, MarkdownRenderer } from 'obsidian';
 import type FleurPDFPlugin from './main';
 import { AIService } from './ai-service';
 
-/** Create an SVG element (SVG tags aren't in HTMLElementTagNameMap) */
+/** Create an SVG element (SVG tags aren't in HTMLElementTagNameMap, so createElementNS is required) */
 function createSvgEl(parent: Node, tag: string, attrs?: Record<string, string>): SVGElement {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   if (attrs) {
@@ -19,7 +19,7 @@ function createSvgEl(parent: Node, tag: string, attrs?: Record<string, string>):
 }
 
 /** 创建发送图标 SVG */
-function createSendIcon(container: HTMLElement): void {
+function createSendIcon(container: Node): void {
   const svg = createSvgEl(container, 'svg', {
     width: '18', height: '18', viewBox: '0 0 24 24',
     fill: 'none', stroke: 'currentColor',
@@ -30,7 +30,7 @@ function createSendIcon(container: HTMLElement): void {
 }
 
 /** 创建停止图标 SVG */
-function createStopIcon(container: HTMLElement): void {
+function createStopIcon(container: Node): void {
   const svg = createSvgEl(container, 'svg', {
     width: '18', height: '18', viewBox: '0 0 24 24',
     fill: 'none', stroke: 'currentColor',
@@ -40,7 +40,7 @@ function createStopIcon(container: HTMLElement): void {
 }
 
 /** 创建复制图标 SVG */
-function createCopyIcon(container: HTMLElement): void {
+function createCopyIcon(container: Node): void {
   const svg = createSvgEl(container, 'svg', {
     width: '14', height: '14', viewBox: '0 0 24 24',
     fill: 'none', stroke: 'currentColor',
@@ -51,7 +51,7 @@ function createCopyIcon(container: HTMLElement): void {
 }
 
 /** 创建重新生成图标 SVG */
-function createRegenIcon(container: HTMLElement): void {
+function createRegenIcon(container: Node): void {
   const svg = createSvgEl(container, 'svg', {
     width: '14', height: '14', viewBox: '0 0 24 24',
     fill: 'none', stroke: 'currentColor',
@@ -63,7 +63,7 @@ function createRegenIcon(container: HTMLElement): void {
 }
 
 /** 创建保存笔记图标 SVG */
-function createSaveIcon(container: HTMLElement): void {
+function createSaveIcon(container: Node): void {
   const svg = createSvgEl(container, 'svg', {
     width: '14', height: '14', viewBox: '0 0 24 24',
     fill: 'none', stroke: 'currentColor',
@@ -214,7 +214,7 @@ export class AIChatPanel {
     this.dragOffsetX = e.clientX - rect.left;
     this.dragOffsetY = e.clientY - rect.top;
 
-    this.panelEl!.style.setProperty('right', 'auto');
+    this.panelEl!.style.removeProperty('right');
     this.panelEl!.style.setProperty('left', rect.left + 'px');
     this.panelEl!.style.setProperty('top', rect.top + 'px');
 
