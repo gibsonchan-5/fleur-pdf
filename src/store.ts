@@ -33,8 +33,8 @@ export class AnnotationStore {
         const content = await this.app.vault.adapter.read(filePath);
         return JSON.parse(content);
       }
-    } catch (e) {
-      console.error('加载标注数据失败:', e);
+    } catch {
+      // 加载失败时返回空数据
     }
 
     return { fileId: pdfPath, annotations: [] };
@@ -70,7 +70,8 @@ export class AnnotationStore {
 
   async getAIResults(pdfPath: string): Promise<AIResult[]> {
     const data = await this.load(pdfPath);
-    return data.aiResults || [];
+    const results: AIResult[] = data.aiResults ?? [];
+    return results;
   }
 
   async removeAIResult(pdfPath: string, resultId: string): Promise<void> {

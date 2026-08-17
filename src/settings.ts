@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, PluginSettingTab, Setting, requestUrl } from 'obsidian';
 import type FleurPDFPlugin from './main';
 
 export interface FleurSettings {
@@ -42,12 +42,16 @@ export class FleurSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  getSettingDefinitions(): any[] {
+    return [];
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
 
     // ── AI 配置 ──
-    containerEl.createEl('h3', { text: 'AI 配置' });
+    new Setting(containerEl).setName('AI 配置').setHeading();
 
     const PROVIDER_DEFAULTS: Record<string, { baseUrl: string; model: string }> = {
       deepseek: { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
@@ -121,7 +125,8 @@ export class FleurSettingTab extends PluginSettingTab {
           btn.setDisabled(true);
           try {
             const { baseUrl, apiKey, model } = this.plugin.settings;
-            const response = await fetch(`${baseUrl}/chat/completions`, {
+            const response = await requestUrl({
+              url: `${baseUrl}/chat/completions`,
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -133,11 +138,10 @@ export class FleurSettingTab extends PluginSettingTab {
                 max_tokens: 5,
               }),
             });
-            if (response.ok) {
+            if (response.status >= 200 && response.status < 300) {
               btn.setButtonText('✓ 连接成功');
               btn.buttonEl.style.color = 'var(--text-success)';
             } else {
-              const body = await response.text();
               btn.setButtonText(`✗ 失败 (${response.status})`);
               btn.buttonEl.style.color = 'var(--text-error)';
             }
@@ -145,7 +149,7 @@ export class FleurSettingTab extends PluginSettingTab {
             btn.setButtonText('✗ 网络错误');
             btn.buttonEl.style.color = 'var(--text-error)';
           }
-          setTimeout(() => {
+          window.setTimeout(() => {
             btn.setButtonText('测试');
             btn.setDisabled(false);
             btn.buttonEl.style.color = '';
@@ -154,7 +158,7 @@ export class FleurSettingTab extends PluginSettingTab {
     });
 
     // ── 标注设置 ──
-    containerEl.createEl('h3', { text: '标注设置' });
+    new Setting(containerEl).setName('标注设置').setHeading();
 
     // 高亮颜色 — 颜色选择器 + 色值文本双控
     new Setting(containerEl)
@@ -189,7 +193,7 @@ export class FleurSettingTab extends PluginSettingTab {
         .addOption('wavy', '波浪')
         .setValue(this.plugin.settings.underlineStyle)
         .onChange(async (value) => {
-          this.plugin.settings.underlineStyle = value as any;
+          this.plugin.settings.underlineStyle = value as 'solid' | 'dashed' | 'dotted' | 'wavy';
           await this.plugin.saveSettings();
         }));
 
@@ -216,7 +220,7 @@ export class FleurSettingTab extends PluginSettingTab {
         }));
 
     // ── 笔记导出 ──
-    containerEl.createEl('h3', { text: '笔记导出' });
+    new Setting(containerEl).setName('笔记导出').setHeading();
 
     // 扫描 vault 中的所有文件夹供选择
     const folderSet = new Set<string>();
@@ -249,7 +253,7 @@ export class FleurSettingTab extends PluginSettingTab {
       });
 
     // ── 侧边栏配置 ──
-    containerEl.createEl('h3', { text: '侧边栏配置' });
+    new Setting(containerEl).setName('侧边栏配置').setHeading();
 
     new Setting(containerEl)
       .setName('侧边栏位置')

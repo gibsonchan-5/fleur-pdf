@@ -45,8 +45,6 @@ export class PDFPatcher {
     document.addEventListener('contextmenu', this.boundContextMenu, true);
     document.addEventListener('mousedown', this.boundMouseDown, true);
     document.addEventListener('mouseup', this.boundMouseUp, true);
-
-    console.log('[FleurPDF] Patcher installed');
   }
 
   // ════════════════════════════════════════════
@@ -77,20 +75,17 @@ export class PDFPatcher {
   private onMouseUp(e: MouseEvent) {
     if (e.button !== 0) return;
     if (!this.isInPDFView(e.target)) {
-      console.log('[FleurPDF] mouseup: not in PDF view');
       return;
     }
 
     // 同步处理选区（不用 rAF，避免 Obsidian 清空选区）
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) {
-      console.log('[FleurPDF] mouseup: no selection or collapsed');
       return;
     }
 
     const text = selection.toString().trim();
     if (!text) {
-      console.log('[FleurPDF] mouseup: empty text after trim');
       return;
     }
 
@@ -99,19 +94,10 @@ export class PDFPatcher {
     // 验证 Range 在 PDF 页面内（findPageEl 已处理 Text 节点）
     const pageEl = this.findPageEl(range.commonAncestorContainer);
     if (!pageEl) {
-      console.log('[FleurPDF] mouseup: pageEl not found', {
-        commonAncestorType: range.commonAncestorContainer.nodeType,
-        commonAncestorTag: (range.commonAncestorContainer as HTMLElement)?.tagName,
-      });
       return;
     }
 
     const pageNum = parseInt(pageEl.getAttribute('data-page-number') || '1');
-
-    console.log('[FleurPDF] mouseup: collecting segments', {
-      text: text.substring(0, 80),
-      pageNum,
-    });
 
     // 立即计算 segments（此时 DOM 还新鲜）
     const segments = this.collectSegmentsFromRange(range, pageNum);
@@ -122,12 +108,6 @@ export class PDFPatcher {
       timestamp: Date.now(),
       segments,
     };
-
-    console.log('[FleurPDF] ✓ Selection saved:', {
-      text: text.substring(0, 60),
-      page: pageNum,
-      segmentsCount: segments.length,
-    });
   }
 
   // ════════════════════════════════════════════
@@ -136,7 +116,6 @@ export class PDFPatcher {
 
   private onContextMenu(e: MouseEvent) {
     if (!this.isInPDFView(e.target)) {
-      console.log('[FleurPDF] onContextMenu: not in PDF view');
       return;
     }
 
@@ -156,12 +135,6 @@ export class PDFPatcher {
       const pageEl = this.findPageEl(range.commonAncestorContainer);
       if (pageEl) {
         pageNum = parseInt(pageEl.getAttribute('data-page-number') || '1');
-        console.log('[FleurPDF] onContextMenu: using live selection', {
-          text: selectedText.substring(0, 80),
-          pageNum,
-          startContainerType: range.startContainer.nodeType,
-          endContainerType: range.endContainer.nodeType,
-        });
         segments = this.collectSegmentsFromRange(range, pageNum);
       }
     } else if (this.lastSnapshot && Date.now() - this.lastSnapshot.timestamp < 3000) {
@@ -170,20 +143,12 @@ export class PDFPatcher {
       selectedText = this.lastSnapshot.text;
       segments = this.lastSnapshot.segments;
       pageNum = this.lastSnapshot.pageNum;
-      console.log('[FleurPDF] onContextMenu: using snapshot', {
-        text: selectedText.substring(0, 80),
-        pageNum,
-        segmentsCount: segments.length,
-        age: Date.now() - this.lastSnapshot.timestamp,
-      });
     } else {
-      console.log('[FleurPDF] onContextMenu: no selection and no valid snapshot');
       return;
     }
 
     // 如果 segments 为空，尝试文本匹配回退
     if (segments.length === 0) {
-      console.log('[FleurPDF] onContextMenu: segments empty, trying text match fallback');
       const pageEl = this.findPageByNumber(pageNum);
       if (pageEl) {
         const textLayer = pageEl.querySelector('.textLayer') as HTMLElement;
@@ -192,12 +157,6 @@ export class PDFPatcher {
         }
       }
     }
-
-    console.log('[FleurPDF] onContextMenu final:', {
-      source,
-      text: selectedText.substring(0, 60),
-      segmentsCount: segments.length,
-    });
 
     e.preventDefault();
     e.stopPropagation();
@@ -229,7 +188,7 @@ export class PDFPatcher {
       item.setTitle('高亮');
       item.setIcon('highlighter');
       item.onClick(() => {
-        this.applyHighlight(text, pageNum, segments, s.highlightColor, 'highlight');
+        void this.applyHighlight(text, pageNum, segments, s.highlightColor, 'highlight');
       });
     });
 
@@ -240,7 +199,7 @@ export class PDFPatcher {
       item.setTitle('划线');
       item.setIcon('underline');
       item.onClick(() => {
-        this.applyUnderline(text, pageNum, segments, s.underlineStyle, s.underlineColor);
+        void this.applyUnderline(text, pageNum, segments, s.underlineStyle, s.underlineColor);
       });
     });
 
@@ -287,34 +246,25 @@ export class PDFPatcher {
   private collectSegmentsFromRange(range: Range, pageNum: number): TextSegment[] {
     const pageEl = this.findPageByNumber(pageNum);
     if (!pageEl) {
-      console.log('[FleurPDF] collectSegmentsFromRange: pageEl not found');
       return [];
     }
 
     const textLayer = pageEl.querySelector('.textLayer') as HTMLElement;
     if (!textLayer) {
-      console.log('[FleurPDF] collectSegmentsFromRange: textLayer not found');
       return [];
     }
 
     // 第一步：DOM 遍历定位
-    console.log('[FleurPDF] Step 1: trying _collectByBoundary');
     const result = this._collectByBoundary(range, textLayer);
     if (result.length > 0) {
-      console.log('[FleurPDF] ✓ Boundary match:', result.length, 'segments');
       return result;
     }
 
     // 第二步：boundary 失败 → 文本匹配回退
     const targetText = range.toString().trim();
-    console.log('[FleurPDF] Step 2: Boundary returned 0, trying text match', {
-      targetText: targetText.substring(0, 100),
-      targetLen: targetText.length,
-    });
     if (!targetText) return [];
     
     const textResult = this._collectByTextMatch(targetText, textLayer);
-    console.log('[FleurPDF] Text match result:', textResult.length, 'segments');
     return textResult;
   }
 
@@ -368,28 +318,12 @@ export class PDFPatcher {
       }
     }
 
-    console.log('[FleurPDF] _collectByBoundary resolved:', {
-      startTextFound: !!startText,
-      startTextContent: startText?.textContent?.substring(0, 30),
-      startOff,
-      endTextFound: !!endText,
-      endTextContent: endText?.textContent?.substring(0, 30),
-      endOff,
-    });
-
     if (!startText || !endText) {
-      console.log('[FleurPDF] _collectByBoundary: could not resolve start/end text nodes', {
-        startContainerType: range.startContainer.nodeType,
-        endContainerType: range.endContainer.nodeType,
-        startOffset: range.startOffset,
-        endOffset: range.endOffset,
-      });
       return [];
     }
 
     // 检查解析出的 textNode 是否在 textLayer 内
     if (!textLayer.contains(startText) || !textLayer.contains(endText)) {
-      console.log('[FleurPDF] _collectByBoundary: resolved nodes outside textLayer');
       return [];
     }
 
@@ -427,13 +361,6 @@ export class PDFPatcher {
 
       if (textNode === endText) break;
     }
-
-    console.log('[FleurPDF] _collectByBoundary:', result.length, 'segments', {
-      startText: startText.textContent?.substring(0, 30),
-      startOff,
-      endText: endText.textContent?.substring(0, 30),
-      endOff,
-    });
 
     return result;
   }
@@ -489,30 +416,21 @@ export class PDFPatcher {
       map.push({ node, start: s, end: fullText.length });
     }
 
-    console.log('[FleurPDF] TextMatch debug:', {
-      cleaned: JSON.stringify(cleaned),
-      fullPreview: JSON.stringify(fullText.substring(0, 100)),
-      fullLen: fullText.length,
-      nodeCount: nodes.length,
-    });
-
     // 策略1: 精确匹配（清理后）
     let idx = fullText.indexOf(cleaned);
     if (idx !== -1) {
-      console.log('[FleurPDF] Exact match at', idx);
       return this._textRangeToSegments(map, idx, idx + cleaned.length);
     }
 
     // 策略2: 归一化空白匹配（处理 PDF.js 中多空格/换行的差异）
-    const normFull = fullText.replace(/[\s\u00A0\u200B\u200C\u200D\uFEFF]+/g, ' ').trim();
-    const normTarget = cleaned.replace(/[\s\u00A0\u200B\u200C\u200D\uFEFF]+/g, ' ').trim();
+    const normFull = fullText.replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, ' ').trim();
+    const normTarget = cleaned.replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, ' ').trim();
     const nIdx = normFull.indexOf(normTarget);
     if (nIdx !== -1) {
       const [origStart, origEnd] = this._normToOrig(fullText, nIdx, nIdx + normTarget.length);
       if (origStart >= 0 && origEnd > origStart) {
         const r = this._textRangeToSegments(map, origStart, origEnd);
         if (r.length > 0) {
-          console.log('[FleurPDF] Normalized match OK:', r.length, 'segments');
           return r;
         }
       }
@@ -539,7 +457,6 @@ export class PDFPatcher {
           if (o1 >= 0 && o2 > o1) {
             const r = this._textRangeToSegments(map, o1, o2);
             if (r.length > 0) {
-              console.log('[FleurPDF] Word match fallback OK:', r.length, 'segments');
               return r;
             }
           }
@@ -547,7 +464,6 @@ export class PDFPatcher {
       }
     }
 
-    console.warn('[FleurPDF] All text match fallbacks failed for cleaned:', JSON.stringify(cleaned));
     return [];
   }
 
@@ -557,8 +473,8 @@ export class PDFPatcher {
     let oStart = -1;
     let oEnd = -1;
     for (let i = 0; i < fullText.length; i++) {
-      if (/[\s\u00A0\u200B\u200C\u200D\uFEFF]/.test(fullText[i])) {
-        while (i + 1 < fullText.length && /[\s\u00A0\u200B\u200C\u200D\uFEFF]/.test(fullText[i + 1])) i++;
+      if (/[\s\u200B\u200C\u200D\uFEFF]/.test(fullText[i])) {
+        while (i + 1 < fullText.length && /[\s\u200B\u200C\u200D\uFEFF]/.test(fullText[i + 1])) i++;
         if (normPos > 0) normPos++;
         continue;
       }
@@ -611,7 +527,8 @@ export class PDFPatcher {
       }
     }
 
-    const subSpan = document.createElement('span');
+    const container = parent as HTMLElement;
+    const subSpan = container.createEl('span');
     subSpan.textContent = middle;
     subSpan.dataset['fleurSel'] = '1';
     styleFn(subSpan);
@@ -645,7 +562,7 @@ export class PDFPatcher {
       this.wrapAndStyle(seg, (el) => {
         el.style.backgroundColor = color;
         el.style.borderRadius = '2px';
-        (el.style as any).webkitBoxDecorationBreak = 'clone';
+        el.style.setProperty('-webkit-box-decoration-break', 'clone');
         el.dataset['annId'] = annId;
       });
     });
@@ -668,7 +585,7 @@ export class PDFPatcher {
           ? `underline wavy ${color}`
           : `underline ${style} ${color}`;
         el.style.textUnderlineOffset = '3px';
-        (el.style as any).webkitBoxDecorationBreak = 'clone';
+        el.style.setProperty('-webkit-box-decoration-break', 'clone');
         el.dataset['annId'] = annId;
       });
     });
@@ -696,7 +613,7 @@ export class PDFPatcher {
     };
 
     await this.plugin.store.addAnnotation(file.path, annotation);
-    this.plugin.sidebar?.refresh();
+    this.plugin.getSidebar()?.refresh();
     new Notice(type === 'comment' ? '已添加批注' : type === 'underline' ? '已添加划线' : '已添加高亮');
     return annotation.id;
   }
@@ -715,104 +632,52 @@ export class PDFPatcher {
       const span = this.wrapAndStyle(seg, (el) => {
         el.style.backgroundColor = hlColor;
         el.style.borderRadius = '2px';
-        (el.style as any).webkitBoxDecorationBreak = 'clone';
+        el.style.setProperty('-webkit-box-decoration-break', 'clone');
       });
       if (span) styledSpans.push(span);
     });
 
-    const pageEl = styledSpans[0]?.closest('.page') as HTMLElement | null;
+    const pageEl = styledSpans[0]?.closest<HTMLElement>('.page') ?? null;
     const firstSpan = styledSpans[0];
 
     const modal = new Modal(this.plugin.app);
-    modal.titleEl.style.display = 'none';
+    modal.titleEl.hide();
 
     const root = modal.contentEl.createDiv();
-    root.style.cssText = `
-      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
-      max-width:480px;margin:0 auto;padding:20px 24px;
-    `;
+    root.addClass('fleur-comment-dialog-root');
 
     const quoteBlock = root.createDiv();
-    quoteBlock.style.cssText = `
-      padding:12px 16px;margin-bottom:16px;
-      background:var(--background-secondary);
-      border-radius:4px;
-      position:relative;
-    `;
+    quoteBlock.addClass('fleur-comment-dialog-quote');
     const quoteBar = quoteBlock.createDiv();
-    quoteBar.style.cssText = `
-      position:absolute;left:0;top:0;bottom:0;
-      width:3px;background:${hlColor};
-      border-radius:4px 0 0 4px;
-    `;
+    quoteBar.addClass('fleur-comment-dialog-quote-bar');
+    quoteBar.style.background = hlColor;
     const quoteText = quoteBlock.createDiv();
-    quoteText.style.cssText = `
-      font-size:13.5px;line-height:1.65;
-      color:var(--text-normal);
-      font-style:italic;
-      letter-spacing:0.01em;
-      max-height:120px;overflow-y:auto;
-      word-break:break-word;
-    `;
+    quoteText.addClass('fleur-comment-dialog-quote-text');
     quoteText.textContent = text;
 
     const inputLabel = root.createDiv();
-    inputLabel.style.cssText = `
-      font-size:11.5px;font-weight:500;
-      color:var(--text-faint);
-      letter-spacing:0.05em;text-transform:uppercase;
-      margin-bottom:6px;
-    `;
+    inputLabel.addClass('fleur-comment-dialog-label');
     inputLabel.textContent = '注释';
 
     const textarea = root.createEl('textarea');
+    textarea.addClass('fleur-comment-dialog-textarea');
     textarea.placeholder = '';
-    textarea.style.cssText = `
-      width:100%;min-height:90px;
-      padding:10px 12px;
-      border:1px solid var(--background-modifier-border);
-      border-radius:5px;
-      resize:vertical;
-      font-size:14px;line-height:1.6;
-      font-family:inherit;
-      color:var(--text-normal);
-      background:var(--background-primary);
-      outline:none;box-sizing:border-box;
-      transition:border-color 0.15s ease;
-    `;
     textarea.addEventListener('focus', () => {
-      textarea.style.borderColor = 'var(--interactive-accent)';
+      textarea.addClass('is-focused');
     });
     textarea.addEventListener('blur', () => {
-      textarea.style.borderColor = 'var(--background-modifier-border)';
+      textarea.removeClass('is-focused');
     });
 
     const btnRow = root.createDiv();
-    btnRow.style.cssText = `
-      display:flex;justify-content:flex-end;gap:8px;margin-top:16px;
-    `;
+    btnRow.addClass('fleur-comment-dialog-btn-row');
 
     const cancelBtn = btnRow.createEl('button', { text: '取消' });
-    cancelBtn.style.cssText = `
-      font-size:13px;padding:6px 14px;
-      border-radius:5px;
-      border:1px solid var(--background-modifier-border);
-      background:transparent;
-      color:var(--text-muted);
-      cursor:pointer;font-family:inherit;
-    `;
+    cancelBtn.addClass('fleur-comment-dialog-btn', 'cancel');
     cancelBtn.addEventListener('click', () => modal.close());
 
     const saveBtn = btnRow.createEl('button', { text: '保存' });
-    saveBtn.style.cssText = `
-      font-size:13px;padding:6px 16px;
-      border-radius:5px;
-      border:none;
-      background:var(--interactive-accent);
-      color:var(--text-on-accent);
-      cursor:pointer;font-weight:500;font-family:inherit;
-      transition:opacity 0.15s ease;
-    `;
+    saveBtn.addClass('fleur-comment-dialog-btn', 'save');
 
     const doAdd = async () => {
       const comment = textarea.value.trim();
@@ -829,12 +694,12 @@ export class PDFPatcher {
       }
     };
 
-    saveBtn.addEventListener('click', doAdd);
+    saveBtn.addEventListener('click', () => { void doAdd(); });
 
     textarea.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        doAdd();
+        void doAdd();
       }
       if (e.key === 'Escape') {
         modal.close();
@@ -842,10 +707,10 @@ export class PDFPatcher {
     });
 
     modal.open();
-    setTimeout(() => textarea.focus(), 100);
+    window.setTimeout(() => textarea.focus(), 100);
   }
 
-  // ═══════════════════════════════════════════
+  // ════════════════════════════════════════════
   //  批注气泡
   // ════════════════════════════════════════════
 
@@ -870,73 +735,40 @@ export class PDFPatcher {
     const anchorX = (spanRect.right - pageRect.left) * scaleX + 6;
     const anchorY = (spanRect.top - pageRect.top) * scaleY - 4;
 
-    const wrapper = document.createElement('div');
-    wrapper.className = 'fleur-comment-bubble';
+    const wrapper = pageEl.createDiv();
+    wrapper.addClass('fleur-comment-bubble');
     if (annId) wrapper.dataset['annId'] = annId;
-    wrapper.style.cssText = `
-      position: absolute;
-      left: ${anchorX}px;
-      top: ${anchorY - 6}px;
-      z-index: 30;
-    `;
+    wrapper.style.left = `${anchorX}px`;
+    wrapper.style.top = `${anchorY - 6}px`;
 
-    const icon = document.createElement('div');
-    icon.style.cssText = `
-      width: 18px; height: 18px;
-      background: #5b6abf;
-      border-radius: 50%;
-      display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
-      cursor: pointer;
-      transition: transform 0.15s ease;
-    `;
-    icon.innerHTML = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+    const icon = wrapper.createDiv();
+    icon.addClass('fleur-comment-bubble-icon');
 
-    const popup = document.createElement('div');
-    popup.style.cssText = `
-      position: absolute;
-      left: 22px;
-      top: -8px;
-      min-width: 140px;
-      max-width: 220px;
-      background: rgba(91, 106, 191, 0.85);
-      color: #fff !important;
-      font-size: 12px;
-      line-height: 1.5;
-      padding: 8px 10px;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-      word-break: break-word;
-      display: none;
-      z-index: 50;
-    `;
-    const tail = document.createElement('div');
-    tail.style.cssText = `
-      position: absolute;
-      left: -6px;
-      top: 10px;
-      width: 0; height: 0;
-      border-top: 6px solid transparent;
-      border-bottom: 6px solid transparent;
-      border-right: 7px solid rgba(91, 106, 191, 0.85);
-    `;
-    popup.appendChild(tail);
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('width', '11');
+    svg.setAttribute('height', '11');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', '#fff');
+    svg.setAttribute('stroke-width', '2.5');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+    const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    pathEl.setAttribute('d', 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z');
+    svg.appendChild(pathEl);
+    icon.appendChild(svg);
 
-    const textEl = document.createElement('div');
+    const popup = wrapper.createDiv();
+    popup.addClass('fleur-comment-bubble-popup');
+
+    const tail = popup.createDiv();
+    tail.addClass('fleur-comment-bubble-tail');
+
+    const textEl = popup.createDiv();
     textEl.textContent = comment;
-    popup.appendChild(textEl);
 
     wrapper.appendChild(icon);
     wrapper.appendChild(popup);
-
-    wrapper.addEventListener('mouseenter', () => {
-      popup.style.display = 'block';
-      icon.style.transform = 'scale(1.15)';
-    });
-    wrapper.addEventListener('mouseleave', () => {
-      popup.style.display = 'none';
-      icon.style.transform = '';
-    });
 
     wrapper.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -960,7 +792,7 @@ export class PDFPatcher {
       const data = await this.plugin.store.load(file.path);
       data.annotations = data.annotations.filter(a => a.comment !== comment);
       await this.plugin.store.save(data);
-      this.plugin.sidebar?.refresh();
+      this.plugin.getSidebar()?.refresh();
     }
     bubble.remove();
     new Notice('已删除批注');
@@ -1007,6 +839,5 @@ export class PDFPatcher {
     }
     this.commentBubbles.forEach(b => b.el.remove());
     this.commentBubbles = [];
-    console.log('[FleurPDF] Patcher uninstalled');
   }
 }

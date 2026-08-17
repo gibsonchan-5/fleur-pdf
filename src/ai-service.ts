@@ -1,5 +1,6 @@
 /**
  * AI 服务 - 使用原生 fetch 实现真正的流式输出
+ * SSE streaming 需要原生 fetch，无法使用 Obsidian 的 requestUrl
  */
 import type FleurPDFPlugin from './main';
 
@@ -23,6 +24,7 @@ export class AIService {
     const url = `${baseUrl}/chat/completions`;
 
     try {
+      // eslint-disable-next-line obsidianmd/no-fetch — SSE streaming requires native fetch
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -88,9 +90,10 @@ export class AIService {
 
       if (signal?.aborted) return;
       onDone?.();
-    } catch (err: any) {
-      if (err.name === 'AbortError') return;
-      onError?.(err.message || '网络请求失败');
+    } catch (err) {
+      const error = err as Error;
+      if (error.name === 'AbortError') return;
+      onError?.(error.message || '网络请求失败');
     }
   }
 }

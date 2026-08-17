@@ -6,6 +6,38 @@ import { AIService } from './ai-service';
 
 export const VIEW_TYPE_SIDEBAR = 'fleur-sidebar';
 
+/** Create an SVG element (SVG tags aren't in HTMLElementTagNameMap) */
+function createSvgEl(parent: Node, tag: string, attrs?: Record<string, string>): SVGElement {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      el.setAttribute(k, v);
+    }
+  }
+  parent.appendChild(el);
+  return el;
+}
+
+/** Helper: create an SVG element with children */
+function appendSvg(
+  container: HTMLElement,
+  attrs: Record<string, string>,
+  children: Array<{ tag: string; attrs: Record<string, string> }>
+): SVGElement {
+  const svg = createSvgEl(container, 'svg', attrs);
+  for (const child of children) {
+    createSvgEl(svg, child.tag, child.attrs);
+  }
+  return svg;
+}
+
+const SVG_ATTRS = {
+  width: '14', height: '14',
+  viewBox: '0 0 24 24', fill: 'none',
+  stroke: 'currentColor', 'stroke-width': '2',
+  'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+};
+
 export class SidebarView extends ItemView {
   private data: PDFAnnotationData | null = null;
   /** 当前正在内联编辑的标注 id */
@@ -36,17 +68,23 @@ export class SidebarView extends ItemView {
   private renderEmpty() {
     const c = this.contentEl;
     c.empty();
-    c.style.padding = '24px 20px';
+    c.addClass('fleur-sidebar-content');
 
     const wrap = c.createDiv();
-    wrap.style.cssText = 'text-align:center;margin-top:60px;';
+    wrap.addClass('fleur-sidebar-empty');
 
     const icon = wrap.createDiv();
-    icon.style.cssText = 'color:var(--text-faint);margin-bottom:12px;';
-    icon.innerHTML = `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
+    icon.addClass('fleur-sidebar-empty-icon');
+    appendSvg(icon,
+      { width: '32', height: '32', viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '1.5', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' },
+      [
+        { tag: 'path', attrs: { d: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z' } },
+        { tag: 'polyline', attrs: { points: '14 2 14 8 20 8' } },
+      ]
+    );
 
     const txt = wrap.createDiv();
-    txt.style.cssText = 'color:var(--text-muted);font-size:13px;letter-spacing:0.01em;';
+    txt.addClass('fleur-sidebar-empty-text');
     txt.textContent = '选中文本后右键开始标注';
   }
 
@@ -55,7 +93,7 @@ export class SidebarView extends ItemView {
   private render() {
     const c = this.contentEl;
     c.empty();
-    c.style.cssText = 'padding:0;overflow-y:auto;';
+    c.addClass('fleur-sidebar-root');
 
     if (!this.data || this.data.annotations.length === 0) {
       this.renderEmpty();
@@ -64,54 +102,33 @@ export class SidebarView extends ItemView {
 
     // 顶栏
     const header = c.createDiv();
-    header.style.cssText = `
-      position:sticky;top:0;z-index:10;
-      padding:14px 20px 12px;
-      background:var(--background-primary);
-      border-bottom:1px solid var(--background-modifier-border);
-      display:flex;align-items:center;justify-content:space-between;
-    `;
+    header.addClass('fleur-sidebar-header');
 
     const titleWrap = header.createDiv();
-    titleWrap.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    titleWrap.addClass('fleur-sidebar-header-title-wrap');
 
     const title = titleWrap.createDiv({ text: '批注' });
-    title.style.cssText = 'font-size:14px;font-weight:600;letter-spacing:-0.01em;color:var(--text-normal);';
+    title.addClass('fleur-sidebar-header-title');
 
     const count = titleWrap.createDiv({ text: `${this.data.annotations.length}` });
-    count.style.cssText = `
-      font-size:11px;font-weight:500;
-      padding:1px 6px;border-radius:8px;
-      background:var(--background-secondary);
-      color:var(--text-muted);
-    `;
+    count.addClass('fleur-sidebar-header-count');
 
     // 导出笔记按钮
     const exportBtn = header.createEl('button');
     exportBtn.title = '导出所有批注为笔记';
-    exportBtn.style.cssText = `
-      display:flex;align-items:center;gap:5px;
-      font-size:12px;font-weight:500;
-      padding:4px 10px;border-radius:6px;
-      border:1px solid var(--background-modifier-border);
-      background:transparent;color:var(--text-muted);
-      cursor:pointer;font-family:inherit;
-      transition:all 0.15s ease;
-    `;
-    exportBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg> 导出笔记`;
-    exportBtn.addEventListener('mouseenter', () => {
-      exportBtn.style.borderColor = 'var(--interactive-accent)';
-      exportBtn.style.color = 'var(--interactive-accent)';
-    });
-    exportBtn.addEventListener('mouseleave', () => {
-      exportBtn.style.borderColor = 'var(--background-modifier-border)';
-      exportBtn.style.color = 'var(--text-muted)';
-    });
+    exportBtn.addClass('fleur-sidebar-export-btn');
+    appendSvg(exportBtn, SVG_ATTRS, [
+      { tag: 'path', attrs: { d: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z' } },
+      { tag: 'polyline', attrs: { points: '14 2 14 8 20 8' } },
+      { tag: 'line', attrs: { x1: '12', y1: '18', x2: '12', y2: '12' } },
+      { tag: 'polyline', attrs: { points: '9 15 12 18 15 15' } },
+    ]);
+    exportBtn.append(' 导出笔记');
     exportBtn.addEventListener('click', () => this.exportAllNotes());
 
     // 内容区
     const body = c.createDiv();
-    body.style.cssText = 'padding:12px 16px 24px;';
+    body.addClass('fleur-sidebar-body');
 
     // 按页分组
     const grouped = new Map<number, Annotation[]>();
@@ -124,18 +141,11 @@ export class SidebarView extends ItemView {
 
     sortedPages.forEach(pageNum => {
       const section = body.createDiv();
-      section.style.cssText = 'margin-bottom:16px;';
+      section.addClass('fleur-sidebar-section');
 
       // 页码标签
       const pageTag = section.createDiv();
-      pageTag.style.cssText = `
-        display:inline-flex;align-items:center;
-        font-size:11px;font-weight:500;letter-spacing:0.04em;
-        color:var(--text-faint);text-transform:uppercase;
-        padding:2px 0;margin-bottom:8px;
-        border-bottom:1px solid var(--background-modifier-border);
-        width:100%;
-      `;
+      pageTag.addClass('fleur-sidebar-page-tag');
       pageTag.textContent = `p.${pageNum}`;
 
       grouped.get(pageNum)!.forEach(ann => {
@@ -148,112 +158,81 @@ export class SidebarView extends ItemView {
 
   private renderAnnotation(parent: HTMLElement, ann: Annotation) {
     const card = parent.createDiv();
-    card.style.cssText = `
-      margin-bottom:6px;
-      border-radius:6px;
-      background:var(--background-primary);
-      border:1px solid var(--background-modifier-border);
-      overflow:hidden;
-      transition:border-color 0.15s ease;
-    `;
+    card.addClass('fleur-sidebar-card');
 
     // 顶部色条
     const bar = card.createDiv();
-    const barColor = ann.type === 'underline'
-      ? (ann.color || '#E8590C')
-      : (ann.color || '#FFC107');
-    bar.style.cssText = `height:2px;background:${barColor};`;
+    bar.addClass('fleur-sidebar-card-bar');
+    bar.style.background = ann.color || (ann.type === 'underline' ? '#E8590C' : '#FFC107');
 
     // 主体
     const main = card.createDiv();
-    main.style.cssText = 'padding:10px 12px;';
+    main.addClass('fleur-sidebar-card-main');
 
     // 选中文本行（带悬停操作）
     const row = main.createDiv();
-    row.style.cssText = 'display:flex;align-items:flex-start;gap:8px;';
+    row.addClass('fleur-sidebar-card-row');
 
     // 类型图标
     const typeIcon = row.createDiv();
-    typeIcon.style.cssText = `
-      flex-shrink:0;width:18px;height:18px;margin-top:1px;
-      display:flex;align-items:center;justify-content:center;
-      color:var(--text-faint);
-    `;
+    typeIcon.addClass('fleur-sidebar-card-type-icon');
     if (ann.type === 'highlight') {
-      typeIcon.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+      appendSvg(typeIcon, SVG_ATTRS, [
+        { tag: 'path', attrs: { d: 'M12 20h9' } },
+        { tag: 'path', attrs: { d: 'M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z' } },
+      ]);
     } else if (ann.type === 'underline') {
-      typeIcon.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7a6 6 0 0 0 6 6 6 6 0 0 0 6-6V3"/><line x1="4" y1="21" x2="20" y2="21"/></svg>`;
+      appendSvg(typeIcon, SVG_ATTRS, [
+        { tag: 'path', attrs: { d: 'M6 3v7a6 6 0 0 0 6 6 6 6 0 0 0 6-6V3' } },
+        { tag: 'line', attrs: { x1: '4', y1: '21', x2: '20', y2: '21' } },
+      ]);
     } else {
-      typeIcon.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+      appendSvg(typeIcon, SVG_ATTRS, [
+        { tag: 'path', attrs: { d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' } },
+      ]);
     }
 
     // 选中文本
     const textWrap = row.createDiv();
-    textWrap.style.cssText = 'flex:1;min-width:0;';
+    textWrap.addClass('fleur-sidebar-card-text-wrap');
 
     const textEl = textWrap.createDiv();
-    textEl.style.cssText = `
-      font-size:13px;line-height:1.5;
-      color:var(--text-normal);
-      word-break:break-word;
-      overflow:hidden;
-      display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;
-    `;
+    textEl.addClass('fleur-sidebar-card-text');
     textEl.textContent = ann.text;
 
     // 操作按钮（悬停显示）
     const actions = row.createDiv();
-    actions.style.cssText = `
-      flex-shrink:0;display:flex;gap:2px;
-      opacity:0;transition:opacity 0.12s ease;
-    `;
-    card.addEventListener('mouseenter', () => { actions.style.opacity = '1'; });
-    card.addEventListener('mouseleave', () => { actions.style.opacity = '0'; });
+    actions.addClass('fleur-sidebar-card-actions');
 
     // AI 生成批注按钮
     const aiBtn = actions.createEl('button');
     aiBtn.title = 'AI 生成批注';
-    aiBtn.style.cssText = `
-      width:22px;height:22px;padding:3px;
-      border:none;background:transparent;
-      color:var(--text-faint);cursor:pointer;border-radius:3px;
-      display:flex;align-items:center;justify-content:center;
-    `;
-    aiBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22"/><path d="M12 2a4 4 0 0 0-4 4c0 1.95 1.4 3.58 3.25 3.93"/><path d="M8 6h8"/><path d="M9 10h6"/><path d="M10 14h4"/><path d="M11 18h2"/></svg>`;
-    aiBtn.addEventListener('mouseenter', () => {
-      aiBtn.style.background = 'var(--background-modifier-hover)';
-      aiBtn.style.color = 'var(--interactive-accent)';
-    });
-    aiBtn.addEventListener('mouseleave', () => {
-      aiBtn.style.background = 'transparent';
-      aiBtn.style.color = 'var(--text-faint)';
-    });
+    aiBtn.addClass('fleur-sidebar-icon-btn');
+    appendSvg(aiBtn, SVG_ATTRS, [
+      { tag: 'path', attrs: { d: 'M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22' } },
+      { tag: 'path', attrs: { d: 'M12 2a4 4 0 0 0-4 4c0 1.95 1.4 3.58 3.25 3.93' } },
+      { tag: 'path', attrs: { d: 'M8 6h8' } },
+      { tag: 'path', attrs: { d: 'M9 10h6' } },
+      { tag: 'path', attrs: { d: 'M10 14h4' } },
+      { tag: 'path', attrs: { d: 'M11 18h2' } },
+    ]);
     aiBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.generateAIComment(ann);
+      void this.generateAIComment(ann);
     });
 
     // 删除按钮
     const delBtn = actions.createEl('button');
     delBtn.title = '删除';
-    delBtn.style.cssText = `
-      width:22px;height:22px;padding:3px;
-      border:none;background:transparent;
-      color:var(--text-faint);cursor:pointer;border-radius:3px;
-      display:flex;align-items:center;justify-content:center;
-    `;
-    delBtn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
-    delBtn.addEventListener('mouseenter', () => {
-      delBtn.style.background = 'var(--background-modifier-hover)';
-      delBtn.style.color = 'var(--text-error)';
-    });
-    delBtn.addEventListener('mouseleave', () => {
-      delBtn.style.background = 'transparent';
-      delBtn.style.color = 'var(--text-faint)';
-    });
+    delBtn.addClass('fleur-sidebar-icon-btn');
+    delBtn.addClass('danger');
+    appendSvg(delBtn, SVG_ATTRS, [
+      { tag: 'line', attrs: { x1: '18', y1: '6', x2: '6', y2: '18' } },
+      { tag: 'line', attrs: { x1: '6', y1: '6', x2: '18', y2: '18' } },
+    ]);
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      this.deleteAnnotation(ann);
+      void this.deleteAnnotation(ann);
     });
 
     // 批注区：有内容时显示文本 + 编辑入口；编辑时变为 textarea
@@ -270,11 +249,7 @@ export class SidebarView extends ItemView {
 
     // 时间戳
     const footer = main.createDiv();
-    footer.style.cssText = `
-      margin-top:6px;margin-left:26px;
-      font-size:11px;color:var(--text-faint);
-      letter-spacing:0.01em;
-    `;
+    footer.addClass('fleur-sidebar-footer');
     footer.textContent = new Date(ann.createdAt).toLocaleString('zh-CN');
   }
 
@@ -282,29 +257,17 @@ export class SidebarView extends ItemView {
   private renderCommentDisplay(slot: HTMLElement, ann: Annotation) {
     slot.empty();
     const wrap = slot.createDiv();
-    wrap.style.cssText = `
-      margin-top:8px;margin-left:26px;
-      padding:8px 10px;
-      border-left:2px solid var(--interactive-accent);
-      background:var(--background-secondary);
-      border-radius:0 4px 4px 0;
-      position:relative;
-    `;
+    wrap.addClass('fleur-sidebar-comment-display');
 
     const text = wrap.createDiv();
-    text.style.cssText = `
-      font-size:12.5px;line-height:1.6;
-      color:var(--text-normal);
-      word-break:break-word;
-      padding-right:36px;
-    `;
+    text.addClass('fleur-sidebar-comment-text');
     // 用 MarkdownRenderer 渲染批注内容（支持 **加粗**、标题、列表等格式）
     if (ann.comment) {
       MarkdownRenderer.renderMarkdown(
         ann.comment,
         text,
         this.app.workspace.getActiveFile()?.path ?? '',
-        this.plugin as any
+        this.plugin
       );
     } else {
       text.textContent = '';
@@ -312,41 +275,25 @@ export class SidebarView extends ItemView {
 
     // 悬停操作（右上角）
     const ops = wrap.createDiv();
-    ops.style.cssText = `
-      position:absolute;top:6px;right:6px;
-      display:flex;gap:2px;
-      opacity:0;transition:opacity 0.12s ease;
-    `;
-    wrap.addEventListener('mouseenter', () => { ops.style.opacity = '1'; });
-    wrap.addEventListener('mouseleave', () => { ops.style.opacity = '0'; });
-
-    const iconBtnStyle = `
-      width:20px;height:20px;padding:2px;
-      border:none;background:transparent;
-      color:var(--text-muted);cursor:pointer;border-radius:3px;
-      display:flex;align-items:center;justify-content:center;
-    `;
+    ops.addClass('fleur-sidebar-comment-ops');
 
     const editBtn = ops.createEl('button');
     editBtn.title = '编辑';
-    editBtn.style.cssText = iconBtnStyle;
-    editBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
-    editBtn.addEventListener('mouseenter', () => { editBtn.style.background = 'var(--background-modifier-hover)'; });
-    editBtn.addEventListener('mouseleave', () => { editBtn.style.background = 'transparent'; });
-    editBtn.addEventListener('click', () => this.openCommentEditor(slot, ann, true));
+    editBtn.addClass('fleur-sidebar-comment-ops-btn');
+    appendSvg(editBtn, { ...SVG_ATTRS, width: '12', height: '12' }, [
+      { tag: 'path', attrs: { d: 'M12 20h9' } },
+      { tag: 'path', attrs: { d: 'M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z' } },
+    ]);
+    editBtn.addEventListener('click', () => void this.openCommentEditor(slot, ann, true));
 
     const delCommentBtn = ops.createEl('button');
     delCommentBtn.title = '删除批注';
-    delCommentBtn.style.cssText = iconBtnStyle;
-    delCommentBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
-    delCommentBtn.addEventListener('mouseenter', () => {
-      delCommentBtn.style.background = 'var(--background-modifier-hover)';
-      delCommentBtn.style.color = 'var(--text-error)';
-    });
-    delCommentBtn.addEventListener('mouseleave', () => {
-      delCommentBtn.style.background = 'transparent';
-      delCommentBtn.style.color = 'var(--text-muted)';
-    });
+    delCommentBtn.addClass('fleur-sidebar-comment-ops-btn');
+    delCommentBtn.addClass('danger');
+    appendSvg(delCommentBtn, { ...SVG_ATTRS, width: '12', height: '12' }, [
+      { tag: 'polyline', attrs: { points: '3 6 5 6 21 6' } },
+      { tag: 'path', attrs: { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' } },
+    ]);
     delCommentBtn.addEventListener('click', async () => {
       await this.clearComment(ann);
     });
@@ -356,54 +303,28 @@ export class SidebarView extends ItemView {
   private renderAddCommentHint(slot: HTMLElement, ann: Annotation) {
     slot.empty();
     const hint = slot.createDiv();
-    hint.style.cssText = `
-      margin-top:6px;margin-left:26px;
-      font-size:12px;color:var(--text-faint);
-      cursor:pointer;padding:4px 8px;
-      border-radius:3px;display:inline-flex;align-items:center;gap:5px;
-      transition:all 0.12s ease;
-    `;
-    hint.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg><span>添加批注</span>`;
-    hint.addEventListener('mouseenter', () => {
-      hint.style.color = 'var(--interactive-accent)';
-      hint.style.background = 'var(--background-modifier-hover)';
-    });
-    hint.addEventListener('mouseleave', () => {
-      hint.style.color = 'var(--text-faint)';
-      hint.style.background = 'transparent';
-    });
-    hint.addEventListener('click', () => this.openCommentEditor(slot, ann, false));
+    hint.addClass('fleur-sidebar-add-hint');
+    appendSvg(hint, { ...SVG_ATTRS, width: '12', height: '12' }, [
+      { tag: 'line', attrs: { x1: '12', y1: '5', x2: '12', y2: '19' } },
+      { tag: 'line', attrs: { x1: '5', y1: '12', x2: '19', y2: '12' } },
+    ]);
+    hint.createSpan({ text: '添加批注' });
+    hint.addEventListener('click', () => void this.openCommentEditor(slot, ann, false));
   }
 
   /** 把批注区切换为 textarea 编辑器 */
   private async openCommentEditor(slot: HTMLElement, ann: Annotation, isEdit: boolean) {
     slot.empty();
     const wrap = slot.createDiv();
-    wrap.style.cssText = `
-      margin-top:8px;margin-left:26px;
-      padding:8px 10px;
-      border-left:2px solid var(--interactive-accent);
-      background:var(--background-secondary);
-      border-radius:0 4px 4px 0;
-    `;
+    wrap.addClass('fleur-sidebar-editor-wrap');
 
     // 如果是编辑 AI 生成的批注，先显示预览，再进入编辑
     const textarea = wrap.createEl('textarea');
     textarea.value = ann.comment || '';
     textarea.placeholder = '写批注…';
-    textarea.style.cssText = `
-      width:100%;min-height:120px;max-height:400px;
-      padding:8px 10px;
-      border:1px solid var(--background-modifier-border);
-      border-radius:4px;resize:vertical;
-      font-size:12.5px;line-height:1.6;
-      font-family:inherit;
-      color:var(--text-normal);
-      background:var(--background-primary);
-      outline:none;box-sizing:border-box;
-    `;
+    textarea.addClass('fleur-sidebar-textarea');
     // 自动撑高 textarea 以显示全部内容
-    setTimeout(() => {
+    window.setTimeout(() => {
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(Math.max(textarea.scrollHeight, 120), 400) + 'px';
     }, 10);
@@ -413,42 +334,28 @@ export class SidebarView extends ItemView {
     });
 
     const btnRow = wrap.createDiv();
-    btnRow.style.cssText = `
-      display:flex;justify-content:flex-end;gap:6px;margin-top:6px;
-    `;
+    btnRow.addClass('fleur-sidebar-editor-btn-row');
 
     if (isEdit) {
       const cancelBtn = btnRow.createEl('button', { text: '取消' });
-      cancelBtn.style.cssText = `
-        font-size:11.5px;padding:2px 8px;border-radius:3px;
-        border:1px solid var(--background-modifier-border);
-        background:transparent;color:var(--text-muted);
-        cursor:pointer;font-family:inherit;
-      `;
+      cancelBtn.addClass('fleur-sidebar-editor-btn');
+      cancelBtn.addClass('cancel');
       cancelBtn.addEventListener('click', () => {
         this.renderCommentDisplay(slot, ann);
       });
 
       // 删除批注按钮
       const delBtn = btnRow.createEl('button', { text: '删除' });
-      delBtn.style.cssText = `
-        font-size:11.5px;padding:2px 8px;border-radius:3px;
-        border:1px solid var(--background-modifier-border);
-        background:transparent;color:var(--text-error);
-        cursor:pointer;font-family:inherit;
-      `;
+      delBtn.addClass('fleur-sidebar-editor-btn');
+      delBtn.addClass('danger');
       delBtn.addEventListener('click', async () => {
         await this.clearComment(ann);
       });
     }
 
     const saveBtn = btnRow.createEl('button', { text: '保存' });
-    saveBtn.style.cssText = `
-      font-size:11.5px;padding:2px 10px;border-radius:3px;
-      border:none;background:var(--interactive-accent);
-      color:var(--text-on-accent);
-      cursor:pointer;font-weight:500;font-family:inherit;
-    `;
+    saveBtn.addClass('fleur-sidebar-editor-btn');
+    saveBtn.addClass('save');
     saveBtn.addEventListener('click', async () => {
       const val = textarea.value.trim();
       if (!val) { new Notice('批注不能为空'); return; }
@@ -485,7 +392,7 @@ export class SidebarView extends ItemView {
       }
     });
 
-    setTimeout(() => textarea.focus(), 30);
+    window.setTimeout(() => textarea.focus(), 30);
   }
 
   /** 删除批注（保留高亮/划线，仅删除 comment 字段） */
@@ -513,7 +420,7 @@ export class SidebarView extends ItemView {
 
     // 如果已经展开，收起
     if (editorContainer.style.display !== 'none') {
-      editorContainer.style.display = 'none';
+      editorContainer.hide();
       editorContainer.empty();
       this.editingId = null;
       return;
@@ -522,48 +429,22 @@ export class SidebarView extends ItemView {
     // 展开编辑器
     this.editingId = ann.id;
     editorContainer.empty();
-    editorContainer.style.cssText = `
-      display:block;
-      padding:0 12px 10px;
-      margin-left:26px;
-    `;
+    editorContainer.show();
+    editorContainer.addClass('fleur-sidebar-inline-editor');
 
     const textarea = editorContainer.createEl('textarea');
     textarea.value = ann.comment || '';
     textarea.placeholder = '写批注…';
-    textarea.style.cssText = `
-      width:100%;min-height:60px;max-height:200px;
-      padding:8px 10px;
-      border:1px solid var(--background-modifier-border);
-      border-radius:5px;resize:vertical;
-      font-size:13px;line-height:1.55;
-      font-family:inherit;
-      color:var(--text-normal);
-      background:var(--background-primary);
-      outline:none;box-sizing:border-box;
-      transition:border-color 0.15s ease;
-    `;
-    textarea.addEventListener('focus', () => {
-      textarea.style.borderColor = 'var(--interactive-accent)';
-    });
-    textarea.addEventListener('blur', () => {
-      textarea.style.borderColor = 'var(--background-modifier-border)';
-    });
+    textarea.addClass('fleur-sidebar-inline-textarea');
 
     const btnRow = editorContainer.createDiv();
-    btnRow.style.cssText = `
-      display:flex;justify-content:flex-end;gap:6px;margin-top:6px;
-    `;
+    btnRow.addClass('fleur-sidebar-inline-btn-row');
 
     if (ann.comment) {
       // 已有批注：显示"清除"和"保存"
       const clearBtn = btnRow.createEl('button', { text: '清除' });
-      clearBtn.style.cssText = `
-        font-size:12px;padding:3px 10px;border-radius:4px;
-        border:1px solid var(--background-modifier-border);
-        background:transparent;color:var(--text-muted);
-        cursor:pointer;font-family:inherit;
-      `;
+      clearBtn.addClass('fleur-sidebar-inline-btn');
+      clearBtn.addClass('clear');
       clearBtn.addEventListener('click', async () => {
         const file = this.app.workspace.getActiveFile();
         if (!file) return;
@@ -574,7 +455,7 @@ export class SidebarView extends ItemView {
           await this.plugin.store.save(data);
           this.plugin.patcher?.removeCommentBubble(ann.id);
         }
-        editorContainer.style.display = 'none';
+        editorContainer.hide();
         editorContainer.empty();
         this.editingId = null;
         new Notice('已清除批注');
@@ -583,12 +464,8 @@ export class SidebarView extends ItemView {
     }
 
     const saveBtn = btnRow.createEl('button', { text: '保存' });
-    saveBtn.style.cssText = `
-      font-size:12px;padding:3px 12px;border-radius:4px;
-      border:none;background:var(--interactive-accent);
-      color:var(--text-on-accent);
-      cursor:pointer;font-weight:500;font-family:inherit;
-    `;
+    saveBtn.addClass('fleur-sidebar-inline-btn');
+    saveBtn.addClass('save');
     saveBtn.addEventListener('click', async () => {
       const val = textarea.value.trim();
       if (!val) { new Notice('批注不能为空'); return; }
@@ -610,7 +487,7 @@ export class SidebarView extends ItemView {
         }
       }
 
-      editorContainer.style.display = 'none';
+      editorContainer.hide();
       editorContainer.empty();
       this.editingId = null;
       new Notice('已保存');
@@ -623,13 +500,13 @@ export class SidebarView extends ItemView {
         saveBtn.click();
       }
       if (e.key === 'Escape') {
-        editorContainer.style.display = 'none';
+        editorContainer.hide();
         editorContainer.empty();
         this.editingId = null;
       }
     });
 
-    setTimeout(() => textarea.focus(), 50);
+    window.setTimeout(() => textarea.focus(), 50);
   }
 
   // ── AI 生成批注 ──
@@ -651,37 +528,14 @@ export class SidebarView extends ItemView {
     // 显示加载状态
     commentSlot.empty();
     const loadingWrap = commentSlot.createDiv();
-    loadingWrap.style.cssText = `
-      margin-top:8px;margin-left:26px;
-      padding:8px 10px;
-      border-left:2px solid var(--interactive-accent);
-      background:var(--background-secondary);
-      border-radius:0 4px 4px 0;
-      display:flex;align-items:center;gap:8px;
-    `;
+    loadingWrap.addClass('fleur-sidebar-ai-loading');
 
     // 旋转动画
     const spinner = loadingWrap.createDiv();
-    spinner.style.cssText = `
-      width:14px;height:14px;
-      border:2px solid var(--background-modifier-border);
-      border-top-color:var(--interactive-accent);
-      border-radius:50%;
-      animation:spin 0.8s linear infinite;
-    `;
+    spinner.addClass('fleur-sidebar-ai-spinner');
 
     const loadingText = loadingWrap.createDiv({ text: 'AI 正在生成批注…' });
-    loadingText.style.cssText = `
-      font-size:12px;color:var(--text-muted);
-    `;
-
-    // 注入旋转动画（只注入一次）
-    if (!document.getElementById('fleur-spin-style')) {
-      const style = document.createElement('style');
-      style.id = 'fleur-spin-style';
-      style.textContent = `@keyframes spin { to { transform: rotate(360deg); } }`;
-      document.head.appendChild(style);
-    }
+    loadingText.addClass('fleur-sidebar-ai-loading-text');
 
     const aiService = new AIService(this.plugin);
     const fullResponse: string[] = [];
@@ -704,8 +558,7 @@ export class SidebarView extends ItemView {
         // 实时显示正在生成的内容
         const currentText = fullResponse.join('');
         loadingText.textContent = currentText;
-        loadingText.style.whiteSpace = 'pre-wrap';
-        loadingText.style.lineHeight = '1.5';
+        loadingText.addClass('fleur-sidebar-ai-loading-text-streaming');
       },
       async () => {
         // 流式完成

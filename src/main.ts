@@ -8,7 +8,6 @@ import { FleurSettings, DEFAULT_SETTINGS, FleurSettingTab } from './settings';
 export default class FleurPDFPlugin extends Plugin {
   store: AnnotationStore;
   patcher: PDFPatcher;
-  sidebar: SidebarView | null = null;
   settings: FleurSettings = DEFAULT_SETTINGS;
 
   async onload() {
@@ -19,8 +18,7 @@ export default class FleurPDFPlugin extends Plugin {
     this.patcher.install();
 
     this.registerView(VIEW_TYPE_SIDEBAR, (leaf) => {
-      this.sidebar = new SidebarView(leaf, this);
-      return this.sidebar;
+      return new SidebarView(leaf, this);
     });
 
     this.addRibbonIcon('file-text', 'FleurPDF', () => {
@@ -35,14 +33,14 @@ export default class FleurPDFPlugin extends Plugin {
 
     this.addSettingTab(new FleurSettingTab(this.app, this));
 
-  // 监听文件切换，刷新侧边栏
-  this.registerEvent(
-    this.app.workspace.on('file-open', (file) => {
-      if (file?.extension === 'pdf') {
-        this.sidebar?.refresh();
-      }
-    })
-  );
+    // 监听文件切换，刷新侧边栏
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (file?.extension === 'pdf') {
+          this.getSidebar()?.refresh();
+        }
+      })
+    );
 
     // 默认打开侧边栏
     this.app.workspace.onLayoutReady(() => {
@@ -60,6 +58,11 @@ export default class FleurPDFPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  getSidebar(): SidebarView | null {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR)[0];
+    return leaf?.view as SidebarView | null;
   }
 
   async activateSidebar() {

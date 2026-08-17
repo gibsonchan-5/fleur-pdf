@@ -49,15 +49,16 @@
 
 ### Manual Installation
 
-1. Download the latest release from GitHub
-2. Extract the files to your vault: `<vault>/.obsidian/plugins/fleur-pdf/`
-3. Reload Obsidian
-4. Enable "FleurPDF" in Settings → Community plugins
+1. Download `main.js`, `manifest.json`, and `styles.css` from the [latest release](https://github.com/gibsonchan-5/fleur-pdf/releases/latest)
+2. Create a folder `<vault>/.obsidian/plugins/fleur-pdf/`
+3. Place the three files into the folder
+4. Reload Obsidian
+5. Enable "FleurPDF" in Settings → Community plugins
 
 ### Build from Source
 
 ```bash
-git clone https://github.com/yourusername/fleur-pdf.git
+git clone https://github.com/gibsonchan-5/fleur-pdf.git
 cd fleur-pdf
 npm install
 npm run build
@@ -225,15 +226,16 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ### 手动安装
 
-1. 从 GitHub 下载最新版本
-2. 解压文件到你的仓库：`<vault>/.obsidian/plugins/fleur-pdf/`
-3. 重新加载 Obsidian
-4. 在设置 → 第三方插件中启用"FleurPDF"
+1. 从 [latest release](https://github.com/gibsonchan-5/fleur-pdf/releases/latest) 下载 `main.js`、`manifest.json`、`styles.css`
+2. 创建文件夹 `<vault>/.obsidian/plugins/fleur-pdf/`
+3. 将三个文件放入该文件夹
+4. 重新加载 Obsidian
+5. 在设置 → 第三方插件中启用"FleurPDF"
 
 ### 从源码构建
 
 ```bash
-git clone https://github.com/yourusername/fleur-pdf.git
+git clone https://github.com/gibsonchan-5/fleur-pdf.git
 cd fleur-pdf
 npm install
 npm run build
