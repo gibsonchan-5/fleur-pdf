@@ -22,13 +22,13 @@ export default class FleurPDFPlugin extends Plugin {
     });
 
     this.addRibbonIcon('file-text', 'FleurPDF', () => {
-      this.activateSidebar();
+      void this.activateSidebar();
     });
 
     this.addCommand({
       id: 'open-sidebar',
       name: '打开批注侧边栏',
-      callback: () => this.activateSidebar()
+      callback: () => { void this.activateSidebar(); }
     });
 
     this.addSettingTab(new FleurSettingTab(this.app, this));
@@ -37,14 +37,14 @@ export default class FleurPDFPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
         if (file?.extension === 'pdf') {
-          this.getSidebar()?.refresh();
+          void this.getSidebar()?.refresh();
         }
       })
     );
 
     // 默认打开侧边栏
     this.app.workspace.onLayoutReady(() => {
-      this.activateSidebar();
+      void this.activateSidebar();
     });
   }
 
@@ -62,7 +62,7 @@ export default class FleurPDFPlugin extends Plugin {
 
   getSidebar(): SidebarView | null {
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR)[0];
-    return leaf?.view as SidebarView | null;
+    return leaf ? (leaf.view as SidebarView) : null;
   }
 
   async activateSidebar() {

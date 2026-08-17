@@ -163,7 +163,7 @@ export class SidebarView extends ItemView {
     // 顶部色条
     const bar = card.createDiv();
     bar.addClass('fleur-sidebar-card-bar');
-    bar.style.background = ann.color || (ann.type === 'underline' ? '#E8590C' : '#FFC107');
+    bar.style.setProperty('--fleur-bar-color', ann.color || (ann.type === 'underline' ? '#E8590C' : '#FFC107'));
 
     // 主体
     const main = card.createDiv();
@@ -325,12 +325,12 @@ export class SidebarView extends ItemView {
     textarea.addClass('fleur-sidebar-textarea');
     // 自动撑高 textarea 以显示全部内容
     window.setTimeout(() => {
-      textarea.style.height = 'auto';
-      textarea.style.height = Math.min(Math.max(textarea.scrollHeight, 120), 400) + 'px';
+      textarea.style.setProperty('height', 'auto');
+      textarea.style.setProperty('height', Math.min(Math.max(textarea.scrollHeight, 120), 400) + 'px');
     }, 10);
     textarea.addEventListener('input', () => {
-      textarea.style.height = 'auto';
-      textarea.style.height = Math.min(Math.max(textarea.scrollHeight, 120), 400) + 'px';
+      textarea.style.setProperty('height', 'auto');
+      textarea.style.setProperty('height', Math.min(Math.max(textarea.scrollHeight, 120), 400) + 'px');
     });
 
     const btnRow = wrap.createDiv();
@@ -678,10 +678,10 @@ export class SidebarView extends ItemView {
     const matched = document.querySelectorAll(`[data-ann-id="${ann.id}"]`);
     matched.forEach((span) => {
       const el = span as HTMLElement;
-      el.style.backgroundColor = '';
-      el.style.borderRadius = '';
-      el.style.textDecoration = '';
-      el.style.textUnderlineOffset = '';
+      el.style.removeProperty('background-color');
+      el.style.removeProperty('border-radius');
+      el.style.removeProperty('text-decoration');
+      el.style.removeProperty('text-underline-offset');
       delete el.dataset['annId'];
     });
 
@@ -693,10 +693,10 @@ export class SidebarView extends ItemView {
         textLayer.querySelectorAll('span').forEach(span => {
           if (span.textContent?.trim() === ann.text.trim()) {
             const el = span as HTMLElement;
-            el.style.backgroundColor = '';
-            el.style.borderRadius = '';
-            el.style.textDecoration = '';
-            el.style.textUnderlineOffset = '';
+            el.style.removeProperty('background-color');
+            el.style.removeProperty('border-radius');
+            el.style.removeProperty('text-decoration');
+            el.style.removeProperty('text-underline-offset');
           }
         });
       });

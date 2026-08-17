@@ -140,19 +140,19 @@ export class FleurSettingTab extends PluginSettingTab {
             });
             if (response.status >= 200 && response.status < 300) {
               btn.setButtonText('✓ 连接成功');
-              btn.buttonEl.style.color = 'var(--text-success)';
+              btn.buttonEl.addClass('fleur-setting-test-success');
             } else {
               btn.setButtonText(`✗ 失败 (${response.status})`);
-              btn.buttonEl.style.color = 'var(--text-error)';
+              btn.buttonEl.addClass('fleur-setting-test-error');
             }
           } catch (e) {
             btn.setButtonText('✗ 网络错误');
-            btn.buttonEl.style.color = 'var(--text-error)';
+            btn.buttonEl.addClass('fleur-setting-test-error');
           }
           window.setTimeout(() => {
             btn.setButtonText('测试');
             btn.setDisabled(false);
-            btn.buttonEl.style.color = '';
+            btn.buttonEl.removeClass('fleur-setting-test-success', 'fleur-setting-test-error');
           }, 3000);
         });
     });

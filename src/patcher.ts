@@ -560,8 +560,8 @@ export class PDFPatcher {
 
     segments.forEach((seg) => {
       this.wrapAndStyle(seg, (el) => {
-        el.style.backgroundColor = color;
-        el.style.borderRadius = '2px';
+        el.style.setProperty('background-color', color);
+        el.style.setProperty('border-radius', '2px');
         el.style.setProperty('-webkit-box-decoration-break', 'clone');
         el.dataset['annId'] = annId;
       });
@@ -581,10 +581,11 @@ export class PDFPatcher {
 
     segments.forEach((seg) => {
       this.wrapAndStyle(seg, (el) => {
-        el.style.textDecoration = style === 'wavy'
+        const textDecorationValue = style === 'wavy'
           ? `underline wavy ${color}`
           : `underline ${style} ${color}`;
-        el.style.textUnderlineOffset = '3px';
+        el.style.setProperty('text-decoration', textDecorationValue);
+        el.style.setProperty('text-underline-offset', '3px');
         el.style.setProperty('-webkit-box-decoration-break', 'clone');
         el.dataset['annId'] = annId;
       });
@@ -630,8 +631,8 @@ export class PDFPatcher {
     const styledSpans: HTMLElement[] = [];
     segments.forEach((seg) => {
       const span = this.wrapAndStyle(seg, (el) => {
-        el.style.backgroundColor = hlColor;
-        el.style.borderRadius = '2px';
+        el.style.setProperty('background-color', hlColor);
+        el.style.setProperty('border-radius', '2px');
         el.style.setProperty('-webkit-box-decoration-break', 'clone');
       });
       if (span) styledSpans.push(span);
@@ -650,7 +651,7 @@ export class PDFPatcher {
     quoteBlock.addClass('fleur-comment-dialog-quote');
     const quoteBar = quoteBlock.createDiv();
     quoteBar.addClass('fleur-comment-dialog-quote-bar');
-    quoteBar.style.background = hlColor;
+    quoteBar.style.setProperty('background', hlColor);
     const quoteText = quoteBlock.createDiv();
     quoteText.addClass('fleur-comment-dialog-quote-text');
     quoteText.textContent = text;
@@ -724,7 +725,7 @@ export class PDFPatcher {
     comment: string, anchorSpan: HTMLElement, pageEl: HTMLElement, annId?: string
   ) {
     if (getComputedStyle(pageEl).position === 'static') {
-      pageEl.style.position = 'relative';
+      pageEl.style.setProperty('position', 'relative');
     }
 
     const pageRect = pageEl.getBoundingClientRect();
@@ -738,8 +739,8 @@ export class PDFPatcher {
     const wrapper = pageEl.createDiv();
     wrapper.addClass('fleur-comment-bubble');
     if (annId) wrapper.dataset['annId'] = annId;
-    wrapper.style.left = `${anchorX}px`;
-    wrapper.style.top = `${anchorY - 6}px`;
+    wrapper.style.setProperty('left', `${anchorX}px`);
+    wrapper.style.setProperty('top', `${anchorY - 6}px`);
 
     const icon = wrapper.createDiv();
     icon.addClass('fleur-comment-bubble-icon');

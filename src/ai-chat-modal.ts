@@ -74,15 +74,13 @@ function createSaveIcon(container: HTMLElement): void {
   createSvgEl(svg, 'polyline', { points: '7 3 7 8 15 8' });
 }
 
-/** 安全地将 HTML 字符串渲染到元素中（避免 innerHTML 直接赋值） */
+/** 安全地将 HTML 字符串渲染到元素中（用 DOMParser 替代 innerHTML） */
 function safeSetHTML(el: HTMLElement, html: string): void {
-  const temp = document.body.createDiv();
-  temp.innerHTML = html;
+  const doc = new DOMParser().parseFromString(html, 'text/html');
   el.empty();
-  while (temp.firstChild) {
-    el.appendChild(temp.firstChild);
+  while (doc.body.firstChild) {
+    el.appendChild(doc.body.firstChild);
   }
-  temp.remove();
 }
 
 export class AIChatPanel {
@@ -216,14 +214,14 @@ export class AIChatPanel {
     this.dragOffsetX = e.clientX - rect.left;
     this.dragOffsetY = e.clientY - rect.top;
 
-    this.panelEl!.style.right = 'auto';
-    this.panelEl!.style.left = rect.left + 'px';
-    this.panelEl!.style.top = rect.top + 'px';
+    this.panelEl!.style.setProperty('right', 'auto');
+    this.panelEl!.style.setProperty('left', rect.left + 'px');
+    this.panelEl!.style.setProperty('top', rect.top + 'px');
 
     const onDragMove = (ev: MouseEvent) => {
       if (!this.isDragging) return;
-      this.panelEl!.style.left = (ev.clientX - this.dragOffsetX) + 'px';
-      this.panelEl!.style.top = (ev.clientY - this.dragOffsetY) + 'px';
+      this.panelEl!.style.setProperty('left', (ev.clientX - this.dragOffsetX) + 'px');
+      this.panelEl!.style.setProperty('top', (ev.clientY - this.dragOffsetY) + 'px');
     };
     const onDragEnd = () => {
       this.isDragging = false;
@@ -251,8 +249,8 @@ export class AIChatPanel {
       if (!this.isResizing) return;
       const newWidth = Math.max(320, startWidth + (ev.clientX - startX));
       const newHeight = Math.max(300, startHeight + (ev.clientY - startY));
-      this.panelEl!.style.width = newWidth + 'px';
-      this.panelEl!.style.height = newHeight + 'px';
+      this.panelEl!.style.setProperty('width', newWidth + 'px');
+      this.panelEl!.style.setProperty('height', newHeight + 'px');
     };
     const onResizeEnd = () => {
       this.isResizing = false;
@@ -362,8 +360,8 @@ export class AIChatPanel {
       content: m.content
     }));
 
-    loading.style.display = 'none';
-    responseEl.style.display = 'block';
+    loading.addClass('is-hidden');
+    responseEl.addClass('is-visible');
 
     // 流式过程中 onChunk 回调
     const onChunk = (chunk: string) => {
@@ -380,7 +378,7 @@ export class AIChatPanel {
 
       if (errorMsg && !aborted) {
         responseEl.setText(`请求出错：${errorMsg}`);
-        responseEl.style.color = 'var(--text-error)';
+        responseEl.addClass('error');
       } else if (this.rawMarkdown) {
         // 有内容（正常完成或被中断），完整渲染
         this.chatHistory.push({ role: 'assistant', content: this.rawMarkdown });
@@ -397,7 +395,7 @@ export class AIChatPanel {
         this.buildActions(actionsEl);
       } else if (!aborted) {
         responseEl.setText('未能获取回复，请检查 API 配置。');
-        responseEl.style.color = 'var(--text-muted)';
+        responseEl.addClass('muted');
       }
 
       this.scrollToBottom();
@@ -430,7 +428,7 @@ export class AIChatPanel {
   // ─── 操作按钮 ──
 
   private buildActions(container: HTMLElement) {
-    container.style.display = 'flex';
+    container.addClass('fleur-ai-actions');
 
     // 复制
     const copyBtn = container.createEl('button');
@@ -465,7 +463,7 @@ export class AIChatPanel {
     this.rawMarkdown = '';
     this.lastResponseEl.empty();
     this.lastActionsEl.empty();
-    this.lastActionsEl.style.display = 'none';
+    this.lastActionsEl.addClass('is-hidden');
 
     // 移除对话历史中最后一条 assistant 消息
     const lastAssistantIndex = this.chatHistory.map(m => m.role).lastIndexOf('assistant');
@@ -476,7 +474,7 @@ export class AIChatPanel {
     const responseEl = this.lastResponseEl;
     const actionsEl = this.lastActionsEl;
 
-    responseEl.style.display = 'block';
+    responseEl.removeClass('is-hidden');
     const aiService = new AIService(this.plugin);
     const messages = this.chatHistory.map(m => ({
       role: m.role as 'system' | 'user' | 'assistant',
@@ -493,7 +491,7 @@ export class AIChatPanel {
       async () => {
         if (this.rawMarkdown === '') {
           responseEl.setText('未能获取回复，请检查 API 配置。');
-          responseEl.style.color = 'var(--text-muted)';
+          responseEl.addClass('muted');
         } else {
           this.chatHistory.push({ role: 'assistant', content: this.rawMarkdown });
           responseEl.empty();
@@ -510,7 +508,7 @@ export class AIChatPanel {
       },
       (error) => {
         responseEl.setText(`请求出错：${error}`);
-        responseEl.style.color = 'var(--text-error)';
+        responseEl.addClass('error');
       }
     );
   }

@@ -24,7 +24,7 @@ export class AIService {
     const url = `${baseUrl}/chat/completions`;
 
     try {
-      // eslint-disable-next-line obsidianmd/no-fetch — SSE streaming requires native fetch
+      // SSE streaming 需要原生 fetch，requestUrl 不支持流式响应
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -56,7 +56,7 @@ export class AIService {
 
       while (true) {
         if (signal?.aborted) {
-          reader.cancel();
+          void reader.cancel();
           return;
         }
         const { done, value } = await reader.read();
@@ -78,9 +78,9 @@ export class AIService {
 
           try {
             const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content;
-            if (content) {
-              onChunk(content);
+            const choice = parsed.choices?.[0];
+            if (choice?.delta?.content) {
+              onChunk(choice.delta.content);
             }
           } catch {
             // 忽略 JSON 解析错误
@@ -91,9 +91,9 @@ export class AIService {
       if (signal?.aborted) return;
       onDone?.();
     } catch (err) {
-      const error = err as Error;
-      if (error.name === 'AbortError') return;
-      onError?.(error.message || '网络请求失败');
+      if (err instanceof Error && err.name === 'AbortError') return;
+      const errorMsg = err instanceof Error ? err.message : '网络请求失败';
+      onError?.(errorMsg);
     }
   }
 }
