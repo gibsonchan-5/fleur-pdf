@@ -488,7 +488,7 @@ export class AIChatPanel {
         safeSetHTML(responseEl, this.renderStreamingMarkdown(this.rawMarkdown));
         this.scrollToBottom();
       },
-      async () => {
+      () => { void (async () => {
         if (this.rawMarkdown === '') {
           responseEl.setText('未能获取回复，请检查 API 配置。');
           responseEl.addClass('muted');
@@ -505,7 +505,7 @@ export class AIChatPanel {
           this.buildActions(actionsEl);
         }
         this.scrollToBottom();
-      },
+      })(); },
       (error) => {
         responseEl.setText(`请求出错：${error}`);
         responseEl.addClass('error');

@@ -42,7 +42,7 @@ export class FleurSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
-  getSettingDefinitions(): any[] {
+  getSettingDefinitions() {
     return [];
   }
 

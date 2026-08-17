@@ -263,7 +263,7 @@ export class SidebarView extends ItemView {
     text.addClass('fleur-sidebar-comment-text');
     // 用 MarkdownRenderer 渲染批注内容（支持 **加粗**、标题、列表等格式）
     if (ann.comment) {
-      MarkdownRenderer.renderMarkdown(
+      void MarkdownRenderer.renderMarkdown(
         ann.comment,
         text,
         this.app.workspace.getActiveFile()?.path ?? '',
@@ -284,7 +284,7 @@ export class SidebarView extends ItemView {
       { tag: 'path', attrs: { d: 'M12 20h9' } },
       { tag: 'path', attrs: { d: 'M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z' } },
     ]);
-    editBtn.addEventListener('click', () => void this.openCommentEditor(slot, ann, true));
+    editBtn.addEventListener('click', () => { void this.openCommentEditor(slot, ann, true); });
 
     const delCommentBtn = ops.createEl('button');
     delCommentBtn.title = '删除批注';
@@ -294,9 +294,7 @@ export class SidebarView extends ItemView {
       { tag: 'polyline', attrs: { points: '3 6 5 6 21 6' } },
       { tag: 'path', attrs: { d: 'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' } },
     ]);
-    delCommentBtn.addEventListener('click', async () => {
-      await this.clearComment(ann);
-    });
+    delCommentBtn.addEventListener('click', () => { void (async () => { await this.clearComment(ann); })(); });
   }
 
   /** 无批注时显示的小入口（点击展开编辑器） */
@@ -309,7 +307,7 @@ export class SidebarView extends ItemView {
       { tag: 'line', attrs: { x1: '5', y1: '12', x2: '19', y2: '12' } },
     ]);
     hint.createSpan({ text: '添加批注' });
-    hint.addEventListener('click', () => void this.openCommentEditor(slot, ann, false));
+    hint.addEventListener('click', () => { void this.openCommentEditor(slot, ann, false); });
   }
 
   /** 把批注区切换为 textarea 编辑器 */
@@ -339,15 +337,13 @@ export class SidebarView extends ItemView {
       const delBtn = btnRow.createEl('button', { text: '删除' });
       delBtn.addClass('fleur-sidebar-editor-btn');
       delBtn.addClass('danger');
-      delBtn.addEventListener('click', async () => {
-        await this.clearComment(ann);
-      });
+      delBtn.addEventListener('click', () => { void (async () => { await this.clearComment(ann); })(); });
     }
 
     const saveBtn = btnRow.createEl('button', { text: '保存' });
     saveBtn.addClass('fleur-sidebar-editor-btn');
     saveBtn.addClass('save');
-    saveBtn.addEventListener('click', async () => {
+    saveBtn.addEventListener('click', () => { void (async () => {
       const val = textarea.value.trim();
       if (!val) { new Notice('批注不能为空'); return; }
 
@@ -370,7 +366,7 @@ export class SidebarView extends ItemView {
 
       new Notice('已保存');
       await this.refresh();
-    });
+    })(); });
 
     textarea.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -436,7 +432,7 @@ export class SidebarView extends ItemView {
       const clearBtn = btnRow.createEl('button', { text: '清除' });
       clearBtn.addClass('fleur-sidebar-inline-btn');
       clearBtn.addClass('clear');
-      clearBtn.addEventListener('click', async () => {
+      clearBtn.addEventListener('click', () => { void (async () => {
         const file = this.app.workspace.getActiveFile();
         if (!file) return;
         const data = await this.plugin.store.load(file.path);
@@ -451,13 +447,13 @@ export class SidebarView extends ItemView {
         this.editingId = null;
         new Notice('已清除批注');
         await this.refresh();
-      });
+      })(); });
     }
 
     const saveBtn = btnRow.createEl('button', { text: '保存' });
     saveBtn.addClass('fleur-sidebar-inline-btn');
     saveBtn.addClass('save');
-    saveBtn.addEventListener('click', async () => {
+    saveBtn.addEventListener('click', () => { void (async () => {
       const val = textarea.value.trim();
       if (!val) { new Notice('批注不能为空'); return; }
 
@@ -483,7 +479,7 @@ export class SidebarView extends ItemView {
       this.editingId = null;
       new Notice('已保存');
       await this.refresh();
-    });
+    })(); });
 
     textarea.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -694,3 +690,4 @@ export class SidebarView extends ItemView {
     }
   }
 }
+

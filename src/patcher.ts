@@ -425,8 +425,8 @@ export class PDFPatcher {
     }
 
     // 策略2: 归一化空白匹配（处理 PDF.js 中多空格/换行的差异）
-    const normFull = fullText.replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, ' ').trim();
-    const normTarget = cleaned.replace(/[\s\u200B\u200C\u200D\uFEFF]+/g, ' ').trim();
+    const normFull = fullText.replace(/(?:\s|[\u200B\u200C\u200D\uFEFF])+/g, ' ').trim();
+    const normTarget = cleaned.replace(/(?:\s|[\u200B\u200C\u200D\uFEFF])+/g, ' ').trim();
     const nIdx = normFull.indexOf(normTarget);
     if (nIdx !== -1) {
       const [origStart, origEnd] = this._normToOrig(fullText, nIdx, nIdx + normTarget.length);
@@ -475,8 +475,8 @@ export class PDFPatcher {
     let oStart = -1;
     let oEnd = -1;
     for (let i = 0; i < fullText.length; i++) {
-      if (/[\s\u200B\u200C\u200D\uFEFF]/.test(fullText[i])) {
-        while (i + 1 < fullText.length && /[\s\u200B\u200C\u200D\uFEFF]/.test(fullText[i + 1])) i++;
+      if (/(?:\s|[\u200B\u200C\u200D\uFEFF])/.test(fullText[i])) {
+        while (i + 1 < fullText.length && /(?:\s|[\u200B\u200C\u200D\uFEFF])/.test(fullText[i + 1])) i++;
         if (normPos > 0) normPos++;
         continue;
       }
@@ -613,7 +613,7 @@ export class PDFPatcher {
     };
 
     await this.plugin.store.addAnnotation(file.path, annotation);
-    this.plugin.getSidebar()?.refresh();
+    void this.plugin.getSidebar()?.refresh();
     new Notice(type === 'comment' ? '已添加批注' : type === 'underline' ? '已添加划线' : '已添加高亮');
     return annotation.id;
   }
@@ -791,7 +791,7 @@ export class PDFPatcher {
       const data = await this.plugin.store.load(file.path);
       data.annotations = data.annotations.filter(a => a.comment !== comment);
       await this.plugin.store.save(data);
-      this.plugin.getSidebar()?.refresh();
+      void this.plugin.getSidebar()?.refresh();
     }
     bubble.remove();
     new Notice('已删除批注');

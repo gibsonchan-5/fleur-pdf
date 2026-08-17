@@ -78,7 +78,7 @@ export default class FleurPDFPlugin extends Plugin {
     }
 
     if (leaf) {
-      workspace.revealLeaf(leaf);
+      await workspace.revealLeaf(leaf);
     }
   }
 

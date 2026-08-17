@@ -31,7 +31,7 @@ export class AnnotationStore {
     try {
       if (await this.app.vault.adapter.exists(filePath)) {
         const content = await this.app.vault.adapter.read(filePath);
-        return JSON.parse(content);
+        return JSON.parse(content) as PDFAnnotationData;
       }
     } catch {
       // 加载失败时返回空数据

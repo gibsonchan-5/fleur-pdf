@@ -90,7 +90,7 @@ export class AIService {
 
       if (signal?.aborted) return;
       onDone?.();
-    } catch (err) {
+    } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
       const errorMsg = err instanceof Error ? err.message : '网络请求失败';
       onError?.(errorMsg);
