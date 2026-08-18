@@ -405,7 +405,7 @@ export class SidebarView extends ItemView {
       await this.plugin.store.save(data);
       this.plugin.patcher?.removeCommentBubble(ann.id);
     }
-    new Notice('已删除批注');
+    new Notice('已删除批注', 2000);
     await this.refresh();
   }
 
@@ -457,7 +457,7 @@ export class SidebarView extends ItemView {
         editorContainer.hide();
         editorContainer.empty();
         this.editingId = null;
-        new Notice('已清除批注');
+        new Notice('已清除批注', 2000);
         await this.refresh();
       })(); });
     }
@@ -614,7 +614,7 @@ export class SidebarView extends ItemView {
     await this.plugin.store.save(data);
     this.clearAnnotationStyles(ann);
     this.plugin.patcher?.removeCommentBubble(ann.id);
-    new Notice('已删除');
+    new Notice('已删除', 2000);
     await this.refresh();
   }
 

@@ -794,7 +794,7 @@ export class PDFPatcher {
       void this.plugin.getSidebar()?.refresh();
     }
     bubble.remove();
-    new Notice('已删除批注');
+    new Notice('已删除批注', 2000);
   }
 
   removeCommentBubble(annId: string) {

@@ -50,6 +50,7 @@ export default class FleurPDFPlugin extends Plugin {
 
   onunload() {
     this.patcher?.uninstall();
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_SIDEBAR);
   }
 
   async loadSettings() {
