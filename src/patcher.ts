@@ -220,7 +220,7 @@ export class PDFPatcher {
     menu.addItem((item) => {
       item.setTitle('询问AI');
       item.setIcon('bot');
-      item.onClick(() => this.askAI(text, '请回答关于这段内容的问题'));
+      item.onClick(() => this.askAI(text, '请回答关于这段内容的问题', x, y));
     });
 
     menu.addSeparator();
@@ -229,7 +229,7 @@ export class PDFPatcher {
     menu.addItem((item) => {
       item.setTitle('AI 翻译');
       item.setIcon('languages');
-      item.onClick(() => this.askAITranslate(text));
+      item.onClick(() => this.askAITranslate(text, x, y));
     });
 
     menu.showAtPosition({ x, y });
@@ -809,14 +809,14 @@ export class PDFPatcher {
   //  AI
   // ════════════════════════════════════════════
 
-  private askAI(text: string, _prompt: string) {
+  private askAI(text: string, _prompt: string, anchorX?: number, anchorY?: number) {
     const panel = new AIChatPanel(this.plugin, text, 'explain');
-    panel.open();
+    panel.open(anchorX, anchorY);
   }
 
-  private askAITranslate(text: string) {
+  private askAITranslate(text: string, anchorX?: number, anchorY?: number) {
     const panel = new AIChatPanel(this.plugin, text, 'translate');
-    panel.open();
+    panel.open(anchorX, anchorY);
   }
 
   // ════════════════════════════════════════════

@@ -54,6 +54,11 @@ export class SidebarView extends ItemView {
   async onOpen() { await this.refresh(); }
 
   async refresh() {
+    // 保存当前滚动位置（contentEl 或 .view-content 是 Obsidian 的滚动容器）
+    const scrollEl = this.contentEl?.closest('.view-content') as HTMLElement | null
+      ?? this.contentEl as HTMLElement | null;
+    const scrollTop = scrollEl?.scrollTop ?? 0;
+
     const file = this.app.workspace.getActiveFile();
     if (!file || file.extension !== 'pdf') {
       this.renderEmpty();
@@ -61,6 +66,15 @@ export class SidebarView extends ItemView {
     }
     this.data = await this.plugin.store.load(file.path);
     this.render();
+
+    // 恢复滚动位置（新 DOM 渲染后）
+    window.requestAnimationFrame(() => {
+      const newScrollEl = this.contentEl?.closest('.view-content') as HTMLElement | null
+        ?? this.contentEl as HTMLElement | null;
+      if (newScrollEl) {
+        newScrollEl.scrollTop = scrollTop;
+      }
+    });
   }
 
   // ── 空状态 ──

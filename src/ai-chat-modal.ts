@@ -107,16 +107,34 @@ export class AIChatPanel {
   private dragOffsetY = 0;
   private isResizing = false;
 
+  // ─── 位置记忆 ───
+  private static readonly POS_KEY = 'fleur-pdf-ai-panel-pos';
+  private static getSavedPos(): { left: number; top: number } | null {
+    try {
+      const raw = localStorage.getItem(AIChatPanel.POS_KEY);
+      if (!raw) return null;
+      const pos = JSON.parse(raw);
+      if (typeof pos.left === 'number' && typeof pos.top === 'number' &&
+          pos.left >= 0 && pos.left < window.innerWidth - 100 &&
+          pos.top >= 0 && pos.top < window.innerHeight - 100) {
+        return pos;
+      }
+    } catch { /* ignore */ }
+    return null;
+  }
+  private static savePos(left: number, top: number) {
+    try { localStorage.setItem(AIChatPanel.POS_KEY, JSON.stringify({ left, top })); } catch { /* ignore */ }
+  }
+
   constructor(
     private plugin: FleurPDFPlugin,
     private selectedText: string,
     private mode: 'explain' | 'translate' = 'explain'
   ) {}
 
-  open() {
+  open(anchorX?: number, anchorY?: number) {
     if (this.panelEl) this.close();
-    this.buildPanel();
-    // DOM 渲染完成后自动发送
+    this.buildPanel(anchorX, anchorY);
     window.requestAnimationFrame(() => { void this.sendInitial(); });
   }
 
@@ -147,9 +165,33 @@ export class AIChatPanel {
 
   // ─── 构建面板 ───
 
-  private buildPanel() {
+  private buildPanel(anchorX?: number, anchorY?: number) {
     this.panelEl = document.body.createDiv();
     this.panelEl.addClass('fleur-ai-panel');
+
+    // 定位：已保存位置 > 鼠标坐标 > CSS 默认
+    const saved = AIChatPanel.getSavedPos();
+    if (saved) {
+      this.panelEl.style.removeProperty('right');
+      this.panelEl.style.removeProperty('top');
+      this.panelEl.style.removeProperty('left');
+      this.panelEl.style.setProperty('left', saved.left + 'px');
+      this.panelEl.style.setProperty('top', saved.top + 'px');
+    } else if (anchorX !== undefined && anchorY !== undefined) {
+      const panelWidth = 440;
+      const panelHeight = 560;
+      const left = anchorX + panelWidth + 20 < window.innerWidth
+        ? anchorX + 20
+        : Math.max(20, anchorX - panelWidth - 20);
+      const top = anchorY + panelHeight + 20 < window.innerHeight
+        ? anchorY + 20
+        : Math.max(20, anchorY - panelHeight - 20);
+      this.panelEl.style.removeProperty('right');
+      this.panelEl.style.removeProperty('top');
+      this.panelEl.style.removeProperty('left');
+      this.panelEl.style.setProperty('left', left + 'px');
+      this.panelEl.style.setProperty('top', top + 'px');
+    }
 
     // 点击外部关闭
     this.clickOutsideHandler = (e: MouseEvent) => {
@@ -227,6 +269,10 @@ export class AIChatPanel {
       this.isDragging = false;
       document.removeEventListener('mousemove', onDragMove);
       document.removeEventListener('mouseup', onDragEnd);
+      if (this.panelEl) {
+        const rect = this.panelEl.getBoundingClientRect();
+        AIChatPanel.savePos(rect.left, rect.top);
+      }
     };
     document.addEventListener('mousemove', onDragMove);
     document.addEventListener('mouseup', onDragEnd);
@@ -256,6 +302,10 @@ export class AIChatPanel {
       this.isResizing = false;
       document.removeEventListener('mousemove', onResizeMove);
       document.removeEventListener('mouseup', onResizeEnd);
+      if (this.panelEl) {
+        const rect = this.panelEl.getBoundingClientRect();
+        AIChatPanel.savePos(rect.left, rect.top);
+      }
     };
     document.addEventListener('mousemove', onResizeMove);
     document.addEventListener('mouseup', onResizeEnd);
