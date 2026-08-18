@@ -183,7 +183,20 @@ export class PDFPatcher {
     const s = this.plugin.settings;
     const menu = new Menu();
 
-    // 1. 高亮
+    // 1. 复制
+    menu.addItem((item) => {
+      item.setTitle('复制');
+      item.setIcon('copy');
+      item.onClick(() => {
+        navigator.clipboard.writeText(text).then(() => {
+          new Notice('已复制');
+        });
+      });
+    });
+
+    menu.addSeparator();
+
+    // 2. 高亮
     menu.addItem((item) => {
       item.setTitle('高亮');
       item.setIcon('highlighter');
