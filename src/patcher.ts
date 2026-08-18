@@ -126,11 +126,11 @@ export class PDFPatcher {
       : '';
     let segments: TextSegment[] = [];
     let pageNum = 1;
-    let source = '';
+    let _source = '';
 
     if (selectedText) {
       // 当前选区还在，立即计算 segments
-      source = 'live-selection';
+      _source = 'live-selection';
       const range = selection!.getRangeAt(0);
       const pageEl = this.findPageEl(range.commonAncestorContainer);
       if (pageEl) {
@@ -139,7 +139,7 @@ export class PDFPatcher {
       }
     } else if (this.lastSnapshot && Date.now() - this.lastSnapshot.timestamp < 3000) {
       // 选区已被清除（右键 mousedown 导致），用保存的快照
-      source = 'snapshot';
+      _source = 'snapshot';
       selectedText = this.lastSnapshot.text;
       segments = this.lastSnapshot.segments;
       pageNum = this.lastSnapshot.pageNum;
@@ -425,8 +425,8 @@ export class PDFPatcher {
     }
 
     // 策略2: 归一化空白匹配（处理 PDF.js 中多空格/换行的差异）
-    const normFull = fullText.replace(/(?:\s|[\u200B\u200C\u200D\uFEFF])+/g, ' ').trim();
-    const normTarget = cleaned.replace(/(?:\s|[\u200B\u200C\u200D\uFEFF])+/g, ' ').trim();
+    const normFull = fullText.replace(/\s+/g, ' ').replace(/[\u200B\u200C\u200D\uFEFF]+/g, '').trim();
+    const normTarget = cleaned.replace(/\s+/g, ' ').replace(/[\u200B\u200C\u200D\uFEFF]+/g, '').trim();
     const nIdx = normFull.indexOf(normTarget);
     if (nIdx !== -1) {
       const [origStart, origEnd] = this._normToOrig(fullText, nIdx, nIdx + normTarget.length);
@@ -475,8 +475,8 @@ export class PDFPatcher {
     let oStart = -1;
     let oEnd = -1;
     for (let i = 0; i < fullText.length; i++) {
-      if (/(?:\s|[\u200B\u200C\u200D\uFEFF])/.test(fullText[i])) {
-        while (i + 1 < fullText.length && /(?:\s|[\u200B\u200C\u200D\uFEFF])/.test(fullText[i + 1])) i++;
+      if (/\s/.test(fullText[i]) || /[\u200B\u200C\u200D\uFEFF]/.test(fullText[i])) {
+        while (i + 1 < fullText.length && (/\s/.test(fullText[i + 1]) || /[\u200B\u200C\u200D\uFEFF]/.test(fullText[i + 1]))) i++;
         if (normPos > 0) normPos++;
         continue;
       }

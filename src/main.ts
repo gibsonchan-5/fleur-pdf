@@ -1,5 +1,5 @@
 // 主入口
-import { Plugin, WorkspaceLeaf, TFile, Notice } from 'obsidian';
+import { Plugin } from 'obsidian';
 import { SidebarView, VIEW_TYPE_SIDEBAR } from './sidebar';
 import { PDFPatcher } from './patcher';
 import { AnnotationStore } from './store';

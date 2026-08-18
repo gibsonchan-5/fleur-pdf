@@ -145,7 +145,7 @@ export class FleurSettingTab extends PluginSettingTab {
               btn.setButtonText(`✗ 失败 (${response.status})`);
               btn.buttonEl.addClass('fleur-setting-test-error');
             }
-          } catch (e) {
+          } catch (_e) {
             btn.setButtonText('✗ 网络错误');
             btn.buttonEl.addClass('fleur-setting-test-error');
           }

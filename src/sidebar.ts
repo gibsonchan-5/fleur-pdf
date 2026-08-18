@@ -55,8 +55,7 @@ export class SidebarView extends ItemView {
 
   async refresh() {
     // 保存当前滚动位置（contentEl 或 .view-content 是 Obsidian 的滚动容器）
-    const scrollEl = this.contentEl?.closest('.view-content') as HTMLElement | null
-      ?? this.contentEl as HTMLElement | null;
+    const scrollEl = (this.contentEl?.closest('.view-content') ?? this.contentEl) as HTMLElement | null;
     const scrollTop = scrollEl?.scrollTop ?? 0;
 
     const file = this.app.workspace.getActiveFile();
@@ -69,8 +68,7 @@ export class SidebarView extends ItemView {
 
     // 恢复滚动位置（新 DOM 渲染后）
     window.requestAnimationFrame(() => {
-      const newScrollEl = this.contentEl?.closest('.view-content') as HTMLElement | null
-        ?? this.contentEl as HTMLElement | null;
+      const newScrollEl = (this.contentEl?.closest('.view-content') ?? this.contentEl) as HTMLElement | null;
       if (newScrollEl) {
         newScrollEl.scrollTop = scrollTop;
       }
@@ -138,7 +136,7 @@ export class SidebarView extends ItemView {
       { tag: 'polyline', attrs: { points: '9 15 12 18 15 15' } },
     ]);
     exportBtn.append(' 导出笔记');
-    exportBtn.addEventListener('click', () => this.exportAllNotes());
+    exportBtn.addEventListener('click', () => { void this.exportAllNotes(); });
 
     // 内容区
     const body = c.createDiv();

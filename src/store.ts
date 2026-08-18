@@ -1,5 +1,5 @@
 // 数据存储层
-import { App, TFile, normalizePath } from 'obsidian';
+import { App, normalizePath } from 'obsidian';
 import type { Annotation, PDFAnnotationData, AIResult } from './types';
 
 export class AnnotationStore {

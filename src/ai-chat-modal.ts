@@ -113,11 +113,11 @@ export class AIChatPanel {
     try {
       const raw = localStorage.getItem(AIChatPanel.POS_KEY);
       if (!raw) return null;
-      const pos = JSON.parse(raw);
-      if (typeof pos.left === 'number' && typeof pos.top === 'number' &&
-          pos.left >= 0 && pos.left < window.innerWidth - 100 &&
-          pos.top >= 0 && pos.top < window.innerHeight - 100) {
-        return pos;
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (typeof parsed.left === 'number' && typeof parsed.top === 'number' &&
+          parsed.left >= 0 && parsed.left < window.innerWidth - 100 &&
+          parsed.top >= 0 && parsed.top < window.innerHeight - 100) {
+        return { left: parsed.left, top: parsed.top };
       }
     } catch { /* ignore */ }
     return null;
@@ -271,7 +271,7 @@ export class AIChatPanel {
       document.removeEventListener('mouseup', onDragEnd);
       if (this.panelEl) {
         const rect = this.panelEl.getBoundingClientRect();
-        AIChatPanel.savePos(rect.left, rect.top);
+        void AIChatPanel.savePos(rect.left, rect.top);
       }
     };
     document.addEventListener('mousemove', onDragMove);
