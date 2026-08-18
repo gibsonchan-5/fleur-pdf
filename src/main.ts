@@ -50,7 +50,6 @@ export default class FleurPDFPlugin extends Plugin {
 
   onunload() {
     this.patcher?.uninstall();
-    this.app.workspace.detachLeavesOfType(VIEW_TYPE_SIDEBAR);
   }
 
   async loadSettings() {
@@ -68,7 +67,16 @@ export default class FleurPDFPlugin extends Plugin {
 
   async activateSidebar() {
     const { workspace } = this.app;
-    let leaf = workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR)[0];
+    const existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
+
+    // 去重：热重载可能残留旧叶子，只保留一个并关闭多余的
+    if (existingLeaves.length > 1) {
+      for (let i = 1; i < existingLeaves.length; i++) {
+        existingLeaves[i].detach();
+      }
+    }
+
+    let leaf = existingLeaves[0];
 
     if (!leaf) {
       const rightLeaf = workspace.getRightLeaf(false);
