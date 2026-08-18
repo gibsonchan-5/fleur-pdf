@@ -622,53 +622,70 @@ export class SidebarView extends ItemView {
 
   private async exportAllNotes() {
     const file = this.app.workspace.getActiveFile();
-    if (!file || !this.data) return;
+    if (!file) {
+      new Notice('请先打开一个 PDF 文件');
+      return;
+    }
+    if (!this.data || this.data.annotations.length === 0) {
+      new Notice('当前文件没有批注可导出');
+      return;
+    }
 
     const noteName = `${file.basename} - 批注笔记`;
     const folder = this.plugin.settings.noteFolder?.trim() || '';
     const notePath = folder ? `${folder}/${noteName}.md` : `${noteName}.md`;
 
-    // 确保文件夹存在
-    if (folder) {
-      const folderExists = await this.app.vault.adapter.exists(folder);
-      if (!folderExists) {
-        await this.app.vault.createFolder(folder);
+    try {
+      // 确保文件夹存在
+      if (folder) {
+        const folderExists = await this.app.vault.adapter.exists(folder);
+        if (!folderExists) {
+          await this.app.vault.createFolder(folder);
+        }
       }
-    }
 
-    let md = `> 导出时间：${new Date().toLocaleString('zh-CN')}\n\n`;
-
-    const grouped = new Map<number, Annotation[]>();
-    this.data.annotations.forEach(ann => {
-      if (!grouped.has(ann.page)) grouped.set(ann.page, []);
-      grouped.get(ann.page)!.push(ann);
-    });
-
-    const sortedPages = Array.from(grouped.keys()).sort((a, b) => a - b);
-
-    sortedPages.forEach(pageNum => {
-      md += `## 第 ${pageNum} 页\n\n`;
-      grouped.get(pageNum)!.forEach(ann => {
-        // 用字体格式区分：高亮用==高亮==、划线用<u>下划线</u>、批注用浅灰色
-        if (ann.type === 'highlight') {
-          md += `==${ann.text}==\n\n`;
-        } else if (ann.type === 'underline') {
-          md += `<u>${ann.text}</u>\n\n`;
-        } else {
-          // 批注类型：文本用浅灰色
-          md += `<span style="color:var(--text-muted)">${ann.text}</span>\n\n`;
+      // 文件已存在时自动覆盖
+      const fileExists = await this.app.vault.adapter.exists(notePath);
+      if (fileExists) {
+        const existingFile = this.app.vault.getAbstractFileByPath(notePath);
+        if (existingFile) {
+          await this.app.vault.delete(existingFile);
         }
-        // 如果有批注内容，用引用块显示
-        if (ann.comment) {
-          md += `> ${ann.comment}\n\n`;
-        }
-        md += `---\n\n`;
+      }
+
+      let md = `> 导出时间：${new Date().toLocaleString('zh-CN')}\n\n`;
+
+      const grouped = new Map<number, Annotation[]>();
+      this.data.annotations.forEach(ann => {
+        if (!grouped.has(ann.page)) grouped.set(ann.page, []);
+        grouped.get(ann.page)!.push(ann);
       });
-    });
 
-    // notePath 已在上方定义
-    await this.app.vault.create(notePath, md);
-    new Notice('笔记已导出');
+      const sortedPages = Array.from(grouped.keys()).sort((a, b) => a - b);
+
+      sortedPages.forEach(pageNum => {
+        md += `## 第 ${pageNum} 页\n\n`;
+        grouped.get(pageNum)!.forEach(ann => {
+          if (ann.type === 'highlight') {
+            md += `==${ann.text}==\n\n`;
+          } else if (ann.type === 'underline') {
+            md += `<u>${ann.text}</u>\n\n`;
+          } else {
+            md += `<span style="color:var(--text-muted)">${ann.text}</span>\n\n`;
+          }
+          if (ann.comment) {
+            md += `> ${ann.comment}\n\n`;
+          }
+          md += `---\n\n`;
+        });
+      });
+
+      await this.app.vault.create(notePath, md);
+      new Notice('笔记已导出');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`导出失败：${msg}`);
+    }
   }
 
   // ── 清除样式 ──

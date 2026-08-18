@@ -502,11 +502,12 @@
   display: flex;
   gap: 2px;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: opacity 0s;
 }
 
 .fleur-sidebar-card:hover .fleur-sidebar-card-actions {
   opacity: 1;
+  transition: opacity 0.15s ease;
 }
 
 .fleur-sidebar-icon-btn {
