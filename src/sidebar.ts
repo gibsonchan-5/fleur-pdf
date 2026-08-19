@@ -219,6 +219,10 @@ export class SidebarView extends ItemView {
     const textEl = textWrap.createDiv();
     textEl.addClass('fleur-sidebar-card-text');
     textEl.textContent = ann.text;
+    textEl.setAttribute('title', '点击查看完整内容');
+    textEl.addEventListener('click', () => {
+      textEl.classList.toggle('fleur-text-expanded');
+    });
 
     // 操作按钮（悬停显示）
     const actions = row.createDiv();
