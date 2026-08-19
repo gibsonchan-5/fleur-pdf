@@ -183,6 +183,9 @@ export class PDFPatcher {
     const s = this.plugin.settings;
     const menu = new Menu();
 
+    // 预先捕获文件路径（菜单显示后 PDF 视图可能失去焦点）
+    const filePath = this.plugin.app.workspace.getActiveFile()?.path ?? null;
+
     // 1. 复制
     menu.addItem((item) => {
       item.setTitle('复制');
@@ -201,7 +204,7 @@ export class PDFPatcher {
       item.setTitle('高亮');
       item.setIcon('highlighter');
       item.onClick(() => {
-        void this.applyHighlight(text, pageNum, segments, s.highlightColor, 'highlight');
+        void this.applyHighlight(text, pageNum, segments, s.highlightColor, 'highlight', filePath);
       });
     });
 
@@ -212,7 +215,7 @@ export class PDFPatcher {
       item.setTitle('划线');
       item.setIcon('underline');
       item.onClick(() => {
-        void this.applyUnderline(text, pageNum, segments, s.underlineStyle, s.underlineColor);
+        void this.applyUnderline(text, pageNum, segments, s.underlineStyle, s.underlineColor, filePath);
       });
     });
 
@@ -223,7 +226,7 @@ export class PDFPatcher {
       item.setTitle('批注');
       item.setIcon('message-square');
       item.onClick(() => {
-        this.showCommentDialog(text, pageNum, segments);
+        this.showCommentDialog(text, pageNum, segments, filePath);
       });
     });
 
@@ -566,11 +569,12 @@ export class PDFPatcher {
 
   private async applyHighlight(
     text: string, pageNum: number, segments: TextSegment[],
-    color: string, type: 'highlight' | 'comment'
+    color: string, type: 'highlight' | 'comment',
+    filePath?: string | null
   ): Promise<string> {
     if (segments.length === 0) { new Notice('未找到选中文本'); return ''; }
 
-    const annId = await this.saveAnnotation(text, pageNum, color, type);
+    const annId = await this.saveAnnotation(text, pageNum, color, type, undefined, undefined, filePath);
     if (!annId) return '';
 
     segments.forEach((seg) => {
@@ -586,11 +590,12 @@ export class PDFPatcher {
 
   private async applyUnderline(
     text: string, pageNum: number, segments: TextSegment[],
-    style: UnderlineStyle, color: string
+    style: UnderlineStyle, color: string,
+    filePath?: string | null
   ): Promise<string> {
     if (segments.length === 0) { new Notice('未找到选中文本'); return ''; }
 
-    const annId = await this.saveAnnotation(text, pageNum, color, 'underline', undefined, style);
+    const annId = await this.saveAnnotation(text, pageNum, color, 'underline', undefined, style, filePath);
     if (!annId) return '';
 
     segments.forEach((seg) => {
@@ -609,10 +614,12 @@ export class PDFPatcher {
   private async saveAnnotation(
     text: string, pageNum: number, color: string,
     type: 'highlight' | 'comment' | 'underline',
-    comment?: string, underlineStyle?: UnderlineStyle
+    comment?: string, underlineStyle?: UnderlineStyle,
+    filePath?: string | null
   ): Promise<string> {
-    const file = this.plugin.app.workspace.getActiveFile();
-    if (!file) return '';
+    // 优先使用传入的 filePath（菜单打开时捕获），其次才用 getActiveFile()
+    const path = filePath ?? this.plugin.app.workspace.getActiveFile()?.path;
+    if (!path) { new Notice('未找到当前文件'); return ''; }
 
     const annotation: Annotation = {
       id: this.plugin.generateId(),
@@ -625,7 +632,7 @@ export class PDFPatcher {
       createdAt: Date.now()
     };
 
-    await this.plugin.store.addAnnotation(file.path, annotation);
+    await this.plugin.store.addAnnotation(path, annotation);
     void this.plugin.getSidebar()?.refresh();
     new Notice(type === 'comment' ? '已添加批注' : type === 'underline' ? '已添加划线' : '已添加高亮');
     return annotation.id;
@@ -635,13 +642,13 @@ export class PDFPatcher {
   //  批注
   // ════════════════════════════════════════════
 
-  private showCommentDialog(text: string, pageNum: number, segments: TextSegment[]) {
+  private showCommentDialog(text: string, pageNum: number, segments: TextSegment[], filePath?: string | null) {
     if (segments.length === 0) { new Notice('未找到选中文本'); return; }
 
     const hlColor = this.plugin.settings.highlightColor;
 
-    // 关闭前捕获文件路径（modal 关闭后 getActiveFile() 可能因 focus 延迟返回 null）
-    const filePath = this.plugin.app.workspace.getActiveFile()?.path ?? null;
+    // 使用传入的 filePath（菜单打开时捕获）
+    const path = filePath ?? this.plugin.app.workspace.getActiveFile()?.path ?? null;
 
     const modal = new Modal(this.plugin.app);
     modal.titleEl.hide();
@@ -685,7 +692,7 @@ export class PDFPatcher {
     const doAdd = async () => {
       const comment = textarea.value.trim();
       if (!comment) { new Notice('批注内容不能为空'); return; }
-      if (!filePath) { new Notice('未找到当前文件'); return; }
+      if (!path) { new Notice('未找到当前文件'); return; }
 
       // 1. 保存数据
       const annotation: Annotation = {
@@ -697,7 +704,7 @@ export class PDFPatcher {
         comment,
         createdAt: Date.now()
       };
-      await this.plugin.store.addAnnotation(filePath, annotation);
+      await this.plugin.store.addAnnotation(path, annotation);
       const annId = annotation.id;
 
       // 2. 关闭弹窗（focus 回到 PDF 视图）
