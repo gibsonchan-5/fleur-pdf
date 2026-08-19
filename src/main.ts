@@ -21,14 +21,6 @@ export default class FleurPDFPlugin extends Plugin {
       return new SidebarView(leaf, this);
     });
 
-    // 清理热重载残留的旧叶子（避免重复注册）
-    const oldLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
-    if (oldLeaves.length > 1) {
-      for (let i = 1; i < oldLeaves.length; i++) {
-        oldLeaves[i].detach();
-      }
-    }
-
     this.addRibbonIcon('file-text', 'FleurPDF', () => {
       void this.activateSidebar();
     });
@@ -51,8 +43,43 @@ export default class FleurPDFPlugin extends Plugin {
     );
 
     // 默认打开侧边栏
+    // 问题根因：onLayoutReady 后 Obsidian 可能还在异步恢复工作区状态，
+    // 如果此时就创建新叶子，之后状态恢复又会恢复旧叶子 → 两个
+    // 解决方案：不主动创建叶子，只清理重复的叶子
+    // 用户可通过 ribbon 图标 / 命令 / 打开 PDF 时自动出现
+    let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const deduplicate = () => {
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+      cleanupTimer = setTimeout(() => {
+        const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
+        if (leaves.length > 1) {
+          for (let i = 1; i < leaves.length; i++) {
+            leaves[i].detach();
+          }
+        }
+      }, 1500);
+    };
+
+    // 监听 layout-change（工作区状态恢复完成后会触发，此时去重）
+    this.registerEvent(
+      this.app.workspace.on('layout-change', () => {
+        deduplicate();
+      })
+    );
+
+    // 打开 PDF 时激活侧边栏
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (file?.extension === 'pdf') {
+          void this.activateSidebar();
+        }
+      })
+    );
+
+    // 延迟去重兜底（确保状态恢复完成后的叶子不重复）
     this.app.workspace.onLayoutReady(() => {
-      void this.activateSidebar();
+      deduplicate();
     });
   }
 
@@ -75,22 +102,29 @@ export default class FleurPDFPlugin extends Plugin {
 
   async activateSidebar() {
     const { workspace } = this.app;
-    let existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
+    const existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
 
-    // 激进去重：detach 所有旧叶子，避免重复
-    if (existingLeaves.length > 0) {
-      for (const leaf of existingLeaves) {
-        leaf.detach();
+    // 优先使用已存在的叶子（可能是状态恢复的），只保留第一个，关闭多余的
+    if (existingLeaves.length > 1) {
+      for (let i = 1; i < existingLeaves.length; i++) {
+        existingLeaves[i].detach();
       }
-      // 等待 detach 完成
       await new Promise((resolve) => setTimeout(resolve, 50));
-      existingLeaves = [];
     }
 
-    const rightLeaf = workspace.getRightLeaf(false);
-    if (rightLeaf) {
-      await rightLeaf.setViewState({ type: VIEW_TYPE_SIDEBAR, active: true });
-      await workspace.revealLeaf(rightLeaf);
+    let leaf = existingLeaves[0];
+
+    // 如果没有叶子（首次使用），才创建新的
+    if (!leaf) {
+      const rightLeaf = workspace.getRightLeaf(false);
+      if (rightLeaf) {
+        await rightLeaf.setViewState({ type: VIEW_TYPE_SIDEBAR, active: true });
+        leaf = rightLeaf;
+      }
+    }
+
+    if (leaf) {
+      await workspace.revealLeaf(leaf);
     }
   }
 
