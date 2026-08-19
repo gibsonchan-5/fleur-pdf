@@ -633,7 +633,7 @@ export class PDFPatcher {
     };
 
     await this.plugin.store.addAnnotation(path, annotation);
-    void this.plugin.getSidebar()?.refresh();
+    void this.plugin.getSidebar()?.refresh(path);
     new Notice(type === 'comment' ? '已添加批注' : type === 'underline' ? '已添加划线' : '已添加高亮');
     return annotation.id;
   }
@@ -752,7 +752,7 @@ export class PDFPatcher {
         }
 
         // 6. 刷新侧边栏
-        void this.plugin.getSidebar()?.refresh();
+        void this.plugin.getSidebar()?.refresh(path);
         new Notice('已添加批注', 2000);
       } catch {
         new Notice('批注保存后渲染失败，数据已保存');
@@ -857,7 +857,7 @@ export class PDFPatcher {
       const data = await this.plugin.store.load(file.path);
       data.annotations = data.annotations.filter(a => a.comment !== comment);
       await this.plugin.store.save(data);
-      void this.plugin.getSidebar()?.refresh();
+      void this.plugin.getSidebar()?.refresh(file.path);
     }
     bubble.remove();
     new Notice('已删除批注', 2000);

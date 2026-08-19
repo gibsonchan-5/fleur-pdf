@@ -53,13 +53,21 @@ export class SidebarView extends ItemView {
 
   async onOpen() { await this.refresh(); }
 
-  async refresh() {
+  async refresh(targetPath?: string | null) {
     // 保存当前滚动位置（contentEl 或 .view-content 是 Obsidian 的滚动容器）
     const scrollEl = (this.contentEl?.closest('.view-content') ?? this.contentEl) as HTMLElement | null;
     const scrollTop = scrollEl?.scrollTop ?? 0;
 
-    const file = this.app.workspace.getActiveFile();
-    if (!file || file.extension !== 'pdf') {
+    // 优先使用传入的路径（右键菜单操作时 PDF 视图可能失去焦点）
+    let file = targetPath
+      ? this.app.vault.getAbstractFileByPath(targetPath)
+      : this.app.workspace.getActiveFile();
+    // getAbstractFileByPath 返回 TAbstractFile，需确认是 TFile
+    if (file && (file as any).extension !== 'pdf') {
+      // 如果不是 PDF，回退到 getActiveFile
+      file = this.app.workspace.getActiveFile();
+    }
+    if (!file || (file as any).extension !== 'pdf') {
       this.renderEmpty();
       return;
     }
