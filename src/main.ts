@@ -75,27 +75,22 @@ export default class FleurPDFPlugin extends Plugin {
 
   async activateSidebar() {
     const { workspace } = this.app;
-    const existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
+    let existingLeaves = workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
 
-    // 去重：热重载可能残留旧叶子，只保留一个并关闭多余的
-    if (existingLeaves.length > 1) {
-      for (let i = 1; i < existingLeaves.length; i++) {
-        existingLeaves[i].detach();
+    // 激进去重：detach 所有旧叶子，避免重复
+    if (existingLeaves.length > 0) {
+      for (const leaf of existingLeaves) {
+        leaf.detach();
       }
+      // 等待 detach 完成
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      existingLeaves = [];
     }
 
-    let leaf = existingLeaves[0];
-
-    if (!leaf) {
-      const rightLeaf = workspace.getRightLeaf(false);
-      if (rightLeaf) {
-        await rightLeaf.setViewState({ type: VIEW_TYPE_SIDEBAR, active: true });
-        leaf = rightLeaf;
-      }
-    }
-
-    if (leaf) {
-      await workspace.revealLeaf(leaf);
+    const rightLeaf = workspace.getRightLeaf(false);
+    if (rightLeaf) {
+      await rightLeaf.setViewState({ type: VIEW_TYPE_SIDEBAR, active: true });
+      await workspace.revealLeaf(rightLeaf);
     }
   }
 
