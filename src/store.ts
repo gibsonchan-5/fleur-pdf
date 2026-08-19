@@ -48,8 +48,12 @@ export class AnnotationStore {
 
   async addAnnotation(pdfPath: string, annotation: Annotation): Promise<void> {
     const data = await this.load(pdfPath);
-    data.annotations.push(annotation);
-    await this.save(data);
+    // 防止重复：检查是否已存在相同 id 的批注
+    const exists = data.annotations.some(a => a.id === annotation.id);
+    if (!exists) {
+      data.annotations.push(annotation);
+      await this.save(data);
+    }
   }
 
   async removeAnnotation(pdfPath: string, annotationId: string): Promise<void> {

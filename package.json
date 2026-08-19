@@ -1,6 +1,6 @@
 {
   "name": "fleur-pdf",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "智能 PDF 阅读与标注插件",
   "main": "main.js",
   "scripts": {

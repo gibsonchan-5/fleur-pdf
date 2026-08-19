@@ -21,6 +21,14 @@ export default class FleurPDFPlugin extends Plugin {
       return new SidebarView(leaf, this);
     });
 
+    // 清理热重载残留的旧叶子（避免重复注册）
+    const oldLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
+    if (oldLeaves.length > 1) {
+      for (let i = 1; i < oldLeaves.length; i++) {
+        oldLeaves[i].detach();
+      }
+    }
+
     this.addRibbonIcon('file-text', 'FleurPDF', () => {
       void this.activateSidebar();
     });
