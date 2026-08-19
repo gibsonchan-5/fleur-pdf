@@ -640,17 +640,8 @@ export class PDFPatcher {
 
     const hlColor = this.plugin.settings.highlightColor;
 
-    const styledSpans: HTMLElement[] = [];
-    segments.forEach((seg) => {
-      const span = this.wrapAndStyle(seg, (el) => {
-        el.style.setProperty('background-color', hlColor);
-        el.addClass('fleur-highlight');
-      });
-      if (span) styledSpans.push(span);
-    });
-
-    const pageEl = styledSpans[0]?.closest<HTMLElement>('.page') ?? null;
-    const firstSpan = styledSpans[0];
+    // 关闭前捕获文件路径（modal 关闭后 getActiveFile() 可能因 focus 延迟返回 null）
+    const filePath = this.plugin.app.workspace.getActiveFile()?.path ?? null;
 
     const modal = new Modal(this.plugin.app);
     modal.titleEl.hide();
@@ -694,15 +685,70 @@ export class PDFPatcher {
     const doAdd = async () => {
       const comment = textarea.value.trim();
       if (!comment) { new Notice('批注内容不能为空'); return; }
+      if (!filePath) { new Notice('未找到当前文件'); return; }
+
+      // 1. 保存数据
+      const annotation: Annotation = {
+        id: this.plugin.generateId(),
+        type: 'comment',
+        page: pageNum,
+        text,
+        color: hlColor,
+        comment,
+        createdAt: Date.now()
+      };
+      await this.plugin.store.addAnnotation(filePath, annotation);
+      const annId = annotation.id;
+
+      // 2. 关闭弹窗（focus 回到 PDF 视图）
       modal.close();
-      const annId = await this.saveAnnotation(text, pageNum, hlColor, 'comment', comment);
-      if (annId) {
-        styledSpans.forEach((span) => {
-          span.dataset['annId'] = annId;
+
+      // 3. 等待 focus 稳定后再做 DOM 操作（避免 PDF.js 重新渲染清除节点）
+      await new Promise((r) => window.setTimeout(r, 80));
+
+      try {
+        // 4. 高亮文本
+        const styledSpans: HTMLElement[] = [];
+        segments.forEach((seg) => {
+          const span = this.wrapAndStyle(seg, (el) => {
+            el.style.setProperty('background-color', hlColor);
+            el.addClass('fleur-highlight');
+            el.dataset['annId'] = annId;
+          });
+          if (span) styledSpans.push(span);
         });
+
+        // 如果 wrapAndStyle 全部失败（textNode 已被 PDF.js 重渲染清除），用文本匹配回退
+        if (styledSpans.length === 0) {
+          const pageEl = this.findPageByNumber(pageNum);
+          if (pageEl) {
+            const textLayer = pageEl.querySelector('.textLayer') as HTMLElement;
+            if (textLayer) {
+              const retrySegments = this._collectByTextMatch(text, textLayer);
+              retrySegments.forEach((seg) => {
+                const span = this.wrapAndStyle(seg, (el) => {
+                  el.style.setProperty('background-color', hlColor);
+                  el.addClass('fleur-highlight');
+                  el.dataset['annId'] = annId;
+                });
+                if (span) styledSpans.push(span);
+              });
+            }
+          }
+        }
+
+        // 5. 添加气泡（使用最新的 DOM 引用）
+        const firstSpan = styledSpans[0];
+        const pageEl = firstSpan?.closest<HTMLElement>('.page') ?? null;
         if (pageEl && firstSpan) {
           this.addCommentBubble(comment, firstSpan, pageEl, annId);
         }
+
+        // 6. 刷新侧边栏
+        void this.plugin.getSidebar()?.refresh();
+        new Notice('已添加批注', 2000);
+      } catch {
+        new Notice('批注保存后渲染失败，数据已保存');
       }
     };
 
