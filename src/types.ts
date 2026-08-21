@@ -6,7 +6,7 @@ export interface Annotation {
   text: string;
   comment?: string;
   color?: string;
-  underlineStyle?: 'solid' | 'dashed' | 'dotted' | 'wavy';
+  underlineStyle?: 'solid' | 'wavy';
   createdAt: number;
 }
 

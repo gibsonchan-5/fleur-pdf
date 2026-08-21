@@ -946,6 +946,79 @@
   position: relative;
 }
 
+/* 自定义右键菜单面板 */
+.fleur-context-panel {
+  position: fixed;
+  z-index: 9999;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 6px;
+  display: flex;
+  gap: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  animation: fleurContextMenuIn 0.15s ease-out;
+}
+
+@keyframes fleurContextMenuIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.fleur-context-item {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease;
+  color: var(--text-normal);
+}
+
+.fleur-context-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.fleur-context-item svg {
+  display: block;
+}
+
+.fleur-context-sep {
+  width: 1px;
+  background: var(--background-modifier-border);
+  margin: 0 2px;
+}
+
+.fleur-context-group {
+  display: flex;
+  gap: 3px;
+}
+
+.fleur-context-hl-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--background-modifier-border-hover);
+  transition: transform 0.12s ease, border-color 0.12s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.fleur-context-hl:hover .fleur-context-hl-dot {
+  transform: scale(1.1);
+  border-color: var(--text-muted);
+}
+
 .fleur-sidebar-textarea {
   height: auto;
   min-height: 120px;

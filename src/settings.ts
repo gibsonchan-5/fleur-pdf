@@ -9,9 +9,8 @@ export interface FleurSettings {
   model: string;
 
   // 标注默认值
-  highlightColor: string;
-  underlineStyle: 'solid' | 'dashed' | 'dotted' | 'wavy';
-  underlineColor: string;
+  highlightColors: string[]; // 3种高亮颜色
+  underlineColor: string; // 下划线颜色
 
   // 笔记导出
   noteFolder: string;
@@ -26,9 +25,8 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   apiKey: '',
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-chat',
-  highlightColor: '#FFD43B',
-  underlineStyle: 'solid',
-  underlineColor: '#E8590C',
+  highlightColors: ['#D4A017', '#2979C4', '#D32F2F'], // 深金、深蓝、深红
+  underlineColor: '#6B0000', // 极深红
   noteFolder: 'FleurReader',
   sidebarPosition: 'right',
   sidebarDefaultOpen: true,
@@ -160,44 +158,34 @@ export class FleurSettingTab extends PluginSettingTab {
     // ── 标注设置 ──
     new Setting(containerEl).setName('标注设置').setHeading();
 
-    // 高亮颜色 — 颜色选择器 + 色值文本双控
-    new Setting(containerEl)
-      .setName('默认高亮颜色')
-      .setDesc('右键高亮时使用的颜色')
-      .addColorPicker(color => color
-        .setValue(this.plugin.settings.highlightColor)
-        .onChange(async (value) => {
-          this.plugin.settings.highlightColor = value;
-          await this.plugin.saveSettings();
-          this.display(); // 刷新以同步文本框
-        }))
-      .addText(text => text
-        .setPlaceholder('#FFD43B')
-        .setValue(this.plugin.settings.highlightColor)
-        .onChange(async (value) => {
-          if (/^#[0-9A-Fa-f]{6}$/.test(value)) {
-            this.plugin.settings.highlightColor = value;
+    // 三种高亮颜色
+    const hlColors = this.plugin.settings.highlightColors;
+    const colorLabels = ['高亮颜色 1', '高亮颜色 2', '高亮颜色 3'];
+    const colorDescs = ['右键菜单第一个颜色', '右键菜单第二个颜色', '右键菜单第三个颜色'];
+
+    for (let i = 0; i < 3; i++) {
+      new Setting(containerEl)
+        .setName(colorLabels[i])
+        .setDesc(colorDescs[i])
+        .addColorPicker(color => color
+          .setValue(hlColors[i])
+          .onChange(async (value) => {
+            this.plugin.settings.highlightColors[i] = value;
             await this.plugin.saveSettings();
-            this.display();
-          }
-        }));
+          }))
+        .addText(text => text
+          .setPlaceholder('#FFFFFF')
+          .setValue(hlColors[i])
+          .onChange(async (value) => {
+            if (/^#[0-9A-Fa-f]{6}$/.test(value)) {
+              this.plugin.settings.highlightColors[i] = value;
+              await this.plugin.saveSettings();
+              this.display();
+            }
+          }));
+    }
 
-    // 下划线样式
-    new Setting(containerEl)
-      .setName('默认下划线样式')
-      .setDesc('右键划线时使用的样式')
-      .addDropdown(dropdown => dropdown
-        .addOption('solid', '直线')
-        .addOption('dashed', '虚线')
-        .addOption('dotted', '点线')
-        .addOption('wavy', '波浪')
-        .setValue(this.plugin.settings.underlineStyle)
-        .onChange(async (value) => {
-          this.plugin.settings.underlineStyle = value as 'solid' | 'dashed' | 'dotted' | 'wavy';
-          await this.plugin.saveSettings();
-        }));
-
-    // 下划线颜色 — 颜色选择器 + 色值文本双控
+    // 下划线颜色
     new Setting(containerEl)
       .setName('默认下划线颜色')
       .setDesc('右键划线时使用的颜色')
@@ -209,7 +197,7 @@ export class FleurSettingTab extends PluginSettingTab {
           this.display();
         }))
       .addText(text => text
-        .setPlaceholder('#E8590C')
+        .setPlaceholder('#6B0000')
         .setValue(this.plugin.settings.underlineColor)
         .onChange(async (value) => {
           if (/^#[0-9A-Fa-f]{6}$/.test(value)) {

@@ -6,7 +6,7 @@ import type FleurPDFPlugin from './main';
 import type { Annotation } from './types';
 import { AIChatPanel } from './ai-chat-modal';
 
-type UnderlineStyle = 'solid' | 'dashed' | 'dotted' | 'wavy';
+type UnderlineStyle = 'solid' | 'wavy';
 
 interface CommentBubble {
   el: HTMLElement;
@@ -181,74 +181,156 @@ export class PDFPatcher {
     segments: TextSegment[]
   ) {
     const s = this.plugin.settings;
-    const menu = new Menu();
+    const underlineColor = s.underlineColor || '#6B0000';
+    const highlightColors = s.highlightColors.length >= 3
+      ? s.highlightColors
+      : ['#D4A017', '#2979C4', '#D32F2F'];
 
     // 预先捕获文件路径（菜单显示后 PDF 视图可能失去焦点）
     const filePath = this.plugin.app.workspace.getActiveFile()?.path ?? null;
 
-    // 1. 复制
-    menu.addItem((item) => {
-      item.setTitle('复制');
-      item.setIcon('copy');
-      item.onClick(() => {
-        navigator.clipboard.writeText(text).then(() => {
-          new Notice('已复制');
-        });
+    // 创建浮动面板
+    const panel = document.createElement('div');
+    panel.addClass('fleur-context-panel');
+
+    // 复制
+    const copyBtn = document.createElement('button');
+    copyBtn.addClass('fleur-context-item');
+    copyBtn.title = '复制';
+    copyBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+    copyBtn.addEventListener('click', () => {
+      navigator.clipboard.writeText(text).then(() => new Notice('已复制'));
+      panel.remove();
+    });
+    panel.appendChild(copyBtn);
+
+    // 分隔
+    const sep1 = document.createElement('div');
+    sep1.addClass('fleur-context-sep');
+    panel.appendChild(sep1);
+
+    // 三个高亮颜色圆点（作为一个整体，前后只加一个分隔符）
+    const hlGroup = document.createElement('div');
+    hlGroup.addClass('fleur-context-group');
+    highlightColors.forEach((color, idx) => {
+      const hlBtn = document.createElement('button');
+      hlBtn.addClass('fleur-context-item', 'fleur-context-hl');
+      hlBtn.title = `高亮 ${idx + 1}`;
+      hlBtn.innerHTML = `<span class="fleur-context-hl-dot" style="background:${color}"></span>`;
+      hlBtn.addEventListener('click', () => {
+        void this.applyHighlight(text, pageNum, segments, color, 'highlight', filePath);
+        panel.remove();
       });
+      hlGroup.appendChild(hlBtn);
     });
+    panel.appendChild(hlGroup);
 
-    menu.addSeparator();
+    // 分隔
+    const sep2 = document.createElement('div');
+    sep2.addClass('fleur-context-sep');
+    panel.appendChild(sep2);
 
-    // 2. 高亮
-    menu.addItem((item) => {
-      item.setTitle('高亮');
-      item.setIcon('highlighter');
-      item.onClick(() => {
-        void this.applyHighlight(text, pageNum, segments, s.highlightColor, 'highlight', filePath);
-      });
+    // 划线 - 直线
+    const solidUlBtn = document.createElement('button');
+    solidUlBtn.addClass('fleur-context-item');
+    solidUlBtn.title = '直线';
+    solidUlBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${underlineColor}" stroke-width="2" stroke-linecap="round"><line x1="3" y1="18" x2="21" y2="18"/></svg>`;
+    solidUlBtn.addEventListener('click', () => {
+      void this.applyUnderline(text, pageNum, segments, 'solid', underlineColor, filePath);
+      panel.remove();
     });
+    panel.appendChild(solidUlBtn);
 
-    menu.addSeparator();
-
-    // 2. 划线
-    menu.addItem((item) => {
-      item.setTitle('划线');
-      item.setIcon('underline');
-      item.onClick(() => {
-        void this.applyUnderline(text, pageNum, segments, s.underlineStyle, s.underlineColor, filePath);
-      });
+    // 划线 - 波浪
+    const wavyUlBtn = document.createElement('button');
+    wavyUlBtn.addClass('fleur-context-item');
+    wavyUlBtn.title = '波浪';
+    wavyUlBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${underlineColor}" stroke-width="2" stroke-linecap="round"><path d="M3 18 Q6 12, 9 18 T15 18 T21 18"/></svg>`;
+    wavyUlBtn.addEventListener('click', () => {
+      void this.applyUnderline(text, pageNum, segments, 'wavy', underlineColor, filePath);
+      panel.remove();
     });
+    panel.appendChild(wavyUlBtn);
 
-    menu.addSeparator();
+    // 分隔
+    const sep3 = document.createElement('div');
+    sep3.addClass('fleur-context-sep');
+    panel.appendChild(sep3);
 
-    // 3. 批注
-    menu.addItem((item) => {
-      item.setTitle('批注');
-      item.setIcon('message-square');
-      item.onClick(() => {
-        this.showCommentDialog(text, pageNum, segments, filePath);
-      });
+    // 批注
+    const commentBtn = document.createElement('button');
+    commentBtn.addClass('fleur-context-item');
+    commentBtn.title = '批注';
+    commentBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+    commentBtn.addEventListener('click', () => {
+      this.showCommentDialog(text, pageNum, segments, filePath);
+      panel.remove();
     });
+    panel.appendChild(commentBtn);
 
-    menu.addSeparator();
+    // 分隔
+    const sep4 = document.createElement('div');
+    sep4.addClass('fleur-context-sep');
+    panel.appendChild(sep4);
 
-    // 4. 询问AI
-    menu.addItem((item) => {
-      item.setTitle('询问AI');
-      item.setIcon('bot');
-      item.onClick(() => this.askAI(text, '请回答关于这段内容的问题', x, y));
+    // 询问AI
+    const askBtn = document.createElement('button');
+    askBtn.addClass('fleur-context-item');
+    askBtn.title = '询问AI';
+    askBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22"/><path d="M12 2a4 4 0 0 0-4 4c0 1.95 1.4 3.58 3.25 3.93"/><path d="M8 6h8"/><path d="M9 10h6"/><path d="M10 14h4"/><path d="M11 18h2"/></svg>`;
+    askBtn.addEventListener('click', () => {
+      this.askAI(text, '请回答关于这段内容的问题', x, y);
+      panel.remove();
     });
+    panel.appendChild(askBtn);
 
-    menu.addSeparator();
+    // 分隔
+    const sep5 = document.createElement('div');
+    sep5.addClass('fleur-context-sep');
+    panel.appendChild(sep5);
 
-    // 5. AI 翻译
-    menu.addItem((item) => {
-      item.setTitle('AI 翻译');
-      item.setIcon('languages');
-      item.onClick(() => this.askAITranslate(text, x, y));
+    // AI 翻译
+    const translateBtn = document.createElement('button');
+    translateBtn.addClass('fleur-context-item');
+    translateBtn.title = 'AI 翻译';
+    translateBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l6 6"/><path d="M4 14l6-6 2-3"/><path d="M2 5h12"/><path d="M7 2v3"/><path d="M22 22l-5-10-5 10"/><path d="M14 18h6"/></svg>`;
+    translateBtn.addEventListener('click', () => {
+      this.askAITranslate(text, x, y);
+      panel.remove();
     });
+    panel.appendChild(translateBtn);
 
-    menu.showAtPosition({ x, y });
+    // 点击外部关闭面板
+    const closeHandler = (e: MouseEvent) => {
+      if (!panel.contains(e.target as Node)) {
+        panel.remove();
+        document.removeEventListener('mousedown', closeHandler, true);
+      }
+    };
+    window.setTimeout(() => {
+      document.addEventListener('mousedown', closeHandler, true);
+    }, 0);
+
+    // 定位面板（确保不超出视口）
+    document.body.appendChild(panel);
+    const panelRect = panel.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    let posX = x;
+    let posY = y;
+
+    if (x + panelRect.width > vw - 8) {
+      posX = vw - panelRect.width - 8;
+    }
+    if (y + panelRect.height > vh - 8) {
+      posY = vh - panelRect.height - 8;
+    }
+    if (posX < 8) posX = 8;
+    if (posY < 8) posY = 8;
+
+    panel.style.setProperty('left', `${posX}px`);
+    panel.style.setProperty('top', `${posY}px`);
   }
 
   // ════════════════════════════════════════════
@@ -600,9 +682,13 @@ export class PDFPatcher {
 
     segments.forEach((seg) => {
       this.wrapAndStyle(seg, (el) => {
-        el.style.setProperty('text-decoration', style === 'wavy'
-          ? `underline wavy ${color}`
-          : `underline ${style} ${color}`);
+        if (style === 'wavy') {
+          el.style.setProperty('text-decoration', `underline wavy ${color}`);
+        } else {
+          el.style.setProperty('text-decoration', `underline ${color}`);
+          el.style.setProperty('text-underline-offset', '3px');
+          el.style.setProperty('text-decoration-thickness', '2px');
+        }
         el.addClass('fleur-underline');
         el.dataset['annId'] = annId;
       });
@@ -645,7 +731,7 @@ export class PDFPatcher {
   private showCommentDialog(text: string, pageNum: number, segments: TextSegment[], filePath?: string | null) {
     if (segments.length === 0) { new Notice('未找到选中文本'); return; }
 
-    const hlColor = this.plugin.settings.highlightColor;
+    const hlColor = this.plugin.settings.highlightColors[0] || '#D4A017';
 
     // 使用传入的 filePath（菜单打开时捕获）
     const path = filePath ?? this.plugin.app.workspace.getActiveFile()?.path ?? null;
