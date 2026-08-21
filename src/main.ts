@@ -47,11 +47,11 @@ export default class FleurPDFPlugin extends Plugin {
     // 如果此时就创建新叶子，之后状态恢复又会恢复旧叶子 → 两个
     // 解决方案：不主动创建叶子，只清理重复的叶子
     // 用户可通过 ribbon 图标 / 命令 / 打开 PDF 时自动出现
-    let cleanupTimer: ReturnType<typeof setTimeout> | null = null;
+    let cleanupTimer: number | null = null;
 
     const deduplicate = () => {
-      if (cleanupTimer) clearTimeout(cleanupTimer);
-      cleanupTimer = setTimeout(() => {
+      if (cleanupTimer) window.clearTimeout(cleanupTimer);
+      cleanupTimer = window.setTimeout(() => {
         const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR);
         if (leaves.length > 1) {
           for (let i = 1; i < leaves.length; i++) {
@@ -109,7 +109,7 @@ export default class FleurPDFPlugin extends Plugin {
       for (let i = 1; i < existingLeaves.length; i++) {
         existingLeaves[i].detach();
       }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => window.setTimeout(resolve, 50));
     }
 
     let leaf = existingLeaves[0];

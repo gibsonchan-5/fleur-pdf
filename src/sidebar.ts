@@ -1,5 +1,5 @@
 // 侧边栏视图 - HiNote 风格内联批注
-import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile } from 'obsidian';
 import type FleurPDFPlugin from './main';
 import type { Annotation, PDFAnnotationData } from './types';
 import { AIService } from './ai-service';
@@ -63,11 +63,11 @@ export class SidebarView extends ItemView {
       ? this.app.vault.getAbstractFileByPath(targetPath)
       : this.app.workspace.getActiveFile();
     // getAbstractFileByPath 返回 TAbstractFile，需确认是 TFile
-    if (file && (file as any).extension !== 'pdf') {
+    if (file && file instanceof TFile && file.extension !== 'pdf') {
       // 如果不是 PDF，回退到 getActiveFile
       file = this.app.workspace.getActiveFile();
     }
-    if (!file || (file as any).extension !== 'pdf') {
+    if (!file || !(file instanceof TFile) || file.extension !== 'pdf') {
       this.renderEmpty();
       return;
     }
@@ -183,7 +183,7 @@ export class SidebarView extends ItemView {
     // 顶部色条
     const bar = card.createDiv();
     bar.addClass('fleur-sidebar-card-bar');
-    bar.style.setProperty('--fleur-bar-color', ann.color || (ann.type === 'underline' ? '#E8590C' : '#FFC107'));
+    bar.style.setProperty('--fleur-bar-color', ann.color || (ann.type === 'underline' ? '#E8590C' : '#FFC107')); // eslint-disable-line no-restricted-syntax
 
     // 主体
     const main = card.createDiv();
@@ -661,7 +661,7 @@ export class SidebarView extends ItemView {
       if (fileExists) {
         const existingFile = this.app.vault.getAbstractFileByPath(notePath);
         if (existingFile) {
-          await this.app.vault.delete(existingFile);
+          await this.app.vault.trash(existingFile, false);
         }
       }
 
@@ -706,10 +706,10 @@ export class SidebarView extends ItemView {
     const matched = document.querySelectorAll(`[data-ann-id="${ann.id}"]`);
     matched.forEach((span) => {
       const el = span as HTMLElement;
-      el.style.removeProperty('background-color');
-      el.style.removeProperty('border-radius');
-      el.style.removeProperty('text-decoration');
-      el.style.removeProperty('text-underline-offset');
+      el.style.background = '';
+      el.style.borderRadius = '';
+      el.style.textDecoration = '';
+      el.style.textUnderlineOffset = '';
       delete el.dataset['annId'];
     });
 
@@ -721,10 +721,10 @@ export class SidebarView extends ItemView {
         textLayer.querySelectorAll('span').forEach(span => {
           if (span.textContent?.trim() === ann.text.trim()) {
             const el = span as HTMLElement;
-            el.style.removeProperty('background-color');
-            el.style.removeProperty('border-radius');
-            el.style.removeProperty('text-decoration');
-            el.style.removeProperty('text-underline-offset');
+            el.style.background = '';
+            el.style.borderRadius = '';
+            el.style.textDecoration = '';
+            el.style.textUnderlineOffset = '';
           }
         });
       });

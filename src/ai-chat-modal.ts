@@ -109,21 +109,23 @@ export class AIChatPanel {
 
   // ─── 位置记忆 ───
   private static readonly POS_KEY = 'fleur-pdf-ai-panel-pos';
-  private static getSavedPos(): { left: number; top: number } | null {
+  private static getSavedPos(plugin: FleurPDFPlugin): { left: number; top: number } | null {
     try {
-      const raw = localStorage.getItem(AIChatPanel.POS_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof parsed.left === 'number' && typeof parsed.top === 'number' &&
-          parsed.left >= 0 && parsed.left < window.innerWidth - 100 &&
-          parsed.top >= 0 && parsed.top < window.innerHeight - 100) {
-        return { left: parsed.left, top: parsed.top };
+      const pos = plugin.settings.aiPanelPos;
+      if (!pos) return null;
+      if (typeof pos.left === 'number' && typeof pos.top === 'number' &&
+          pos.left >= 0 && pos.left < window.innerWidth - 100 &&
+          pos.top >= 0 && pos.top < window.innerHeight - 100) {
+        return { left: pos.left, top: pos.top };
       }
     } catch { /* ignore */ }
     return null;
   }
-  private static savePos(left: number, top: number) {
-    try { localStorage.setItem(AIChatPanel.POS_KEY, JSON.stringify({ left, top })); } catch { /* ignore */ }
+  private static savePos(plugin: FleurPDFPlugin, left: number, top: number) {
+    try {
+      plugin.settings.aiPanelPos = { left, top };
+      void plugin.saveSettings();
+    } catch { /* ignore */ }
   }
 
   constructor(
@@ -170,13 +172,12 @@ export class AIChatPanel {
     this.panelEl.addClass('fleur-ai-panel');
 
     // 定位：已保存位置 > 鼠标坐标 > CSS 默认
-    const saved = AIChatPanel.getSavedPos();
+    const saved = AIChatPanel.getSavedPos(this.plugin);
     if (saved) {
-      this.panelEl.style.removeProperty('right');
-      this.panelEl.style.removeProperty('top');
-      this.panelEl.style.removeProperty('left');
-      this.panelEl.style.setProperty('left', saved.left + 'px');
-      this.panelEl.style.setProperty('top', saved.top + 'px');
+      this.panelEl.style.right = '';
+      this.panelEl.style.top = '';
+      this.panelEl.style.left = saved.left + 'px';
+      this.panelEl.style.top = saved.top + 'px';
     } else if (anchorX !== undefined && anchorY !== undefined) {
       const panelWidth = 440;
       const panelHeight = 560;
@@ -186,11 +187,10 @@ export class AIChatPanel {
       const top = anchorY + panelHeight + 20 < window.innerHeight
         ? anchorY + 20
         : Math.max(20, anchorY - panelHeight - 20);
-      this.panelEl.style.removeProperty('right');
-      this.panelEl.style.removeProperty('top');
-      this.panelEl.style.removeProperty('left');
-      this.panelEl.style.setProperty('left', left + 'px');
-      this.panelEl.style.setProperty('top', top + 'px');
+      this.panelEl.style.right = '';
+      this.panelEl.style.top = '';
+      this.panelEl.style.left = left + 'px';
+      this.panelEl.style.top = top + 'px';
     }
 
     // 点击外部关闭
@@ -256,14 +256,14 @@ export class AIChatPanel {
     this.dragOffsetX = e.clientX - rect.left;
     this.dragOffsetY = e.clientY - rect.top;
 
-    this.panelEl!.style.removeProperty('right');
-    this.panelEl!.style.setProperty('left', rect.left + 'px');
-    this.panelEl!.style.setProperty('top', rect.top + 'px');
+    this.panelEl!.style.right = '';
+    this.panelEl!.style.left = rect.left + 'px';
+    this.panelEl!.style.top = rect.top + 'px';
 
     const onDragMove = (ev: MouseEvent) => {
       if (!this.isDragging) return;
-      this.panelEl!.style.setProperty('left', (ev.clientX - this.dragOffsetX) + 'px');
-      this.panelEl!.style.setProperty('top', (ev.clientY - this.dragOffsetY) + 'px');
+      this.panelEl!.style.left = (ev.clientX - this.dragOffsetX) + 'px';
+      this.panelEl!.style.top = (ev.clientY - this.dragOffsetY) + 'px';
     };
     const onDragEnd = () => {
       this.isDragging = false;
@@ -271,7 +271,7 @@ export class AIChatPanel {
       document.removeEventListener('mouseup', onDragEnd);
       if (this.panelEl) {
         const rect = this.panelEl.getBoundingClientRect();
-        void AIChatPanel.savePos(rect.left, rect.top);
+        void AIChatPanel.savePos(this.plugin, rect.left, rect.top);
       }
     };
     document.addEventListener('mousemove', onDragMove);
@@ -295,8 +295,8 @@ export class AIChatPanel {
       if (!this.isResizing) return;
       const newWidth = Math.max(320, startWidth + (ev.clientX - startX));
       const newHeight = Math.max(300, startHeight + (ev.clientY - startY));
-      this.panelEl!.style.setProperty('width', newWidth + 'px');
-      this.panelEl!.style.setProperty('height', newHeight + 'px');
+      this.panelEl!.style.width = newWidth + 'px';
+      this.panelEl!.style.height = newHeight + 'px';
     };
     const onResizeEnd = () => {
       this.isResizing = false;
@@ -304,7 +304,7 @@ export class AIChatPanel {
       document.removeEventListener('mouseup', onResizeEnd);
       if (this.panelEl) {
         const rect = this.panelEl.getBoundingClientRect();
-        AIChatPanel.savePos(rect.left, rect.top);
+        AIChatPanel.savePos(this.plugin, rect.left, rect.top);
       }
     };
     document.addEventListener('mousemove', onResizeMove);
@@ -486,7 +486,7 @@ export class AIChatPanel {
     copyBtn.title = '复制回答';
     createCopyIcon(copyBtn);
     copyBtn.addEventListener('click', () => {
-      navigator.clipboard.writeText(this.rawMarkdown)
+      void navigator.clipboard.writeText(this.rawMarkdown)
         .then(() => new Notice('已复制'))
         .catch(() => new Notice('复制失败'));
     });

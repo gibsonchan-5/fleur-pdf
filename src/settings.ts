@@ -18,6 +18,9 @@ export interface FleurSettings {
   // 侧边栏配置
   sidebarPosition: 'right' | 'left';
   sidebarDefaultOpen: boolean;
+
+  // AI 面板位置持久化
+  aiPanelPos?: { left: number; top: number };
 }
 
 export const DEFAULT_SETTINGS: FleurSettings = {

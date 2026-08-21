@@ -942,6 +942,18 @@
   box-decoration-break: clone;
 }
 
+.fleur-underline-wavy {
+  text-decoration: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--fleur-underline-color, #E8590C);
+}
+
+.fleur-underline-solid {
+  text-decoration: underline;
+  text-decoration-style: solid;
+  text-decoration-color: var(--fleur-underline-color, #E8590C);
+}
+
 .fleur-page-relative {
   position: relative;
 }

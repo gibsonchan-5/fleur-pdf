@@ -24,7 +24,8 @@ export class AIService {
     const url = `${baseUrl}/chat/completions`;
 
     try {
-      // SSE streaming 需要原生 fetch，requestUrl 不支持流式响应
+      // SSE streaming 需要原生 fetch，requestUrl 不支持流式响应（eslint-disable-next-line）
+      // eslint-disable-next-line no-restricted-syntax
       const response = await fetch(url, {
         method: 'POST',
         headers: {
