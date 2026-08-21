@@ -20,6 +20,9 @@ Thumbs.db
 .env
 .env.local
 
+# Obsidian plugin data (contains user settings, API keys)
+data.json
+
 # Development files
 test-vault/
 test-doc.md

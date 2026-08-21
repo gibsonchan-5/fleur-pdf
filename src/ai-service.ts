@@ -24,8 +24,8 @@ export class AIService {
     const url = `${baseUrl}/chat/completions`;
 
     try {
-      // SSE streaming 需要原生 fetch，requestUrl 不支持流式响应（eslint-disable-next-line）
-      // eslint-disable-next-line no-restricted-syntax
+      // Obsidian's requestUrl does not support SSE streaming; native fetch is required.
+      // eslint-disable-next-line no-restricted-syntax -- SSE streaming requires native fetch
       const response = await fetch(url, {
         method: 'POST',
         headers: {

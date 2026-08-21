@@ -174,10 +174,7 @@ export class AIChatPanel {
     // 定位：已保存位置 > 鼠标坐标 > CSS 默认
     const saved = AIChatPanel.getSavedPos(this.plugin);
     if (saved) {
-      this.panelEl.style.right = '';
-      this.panelEl.style.top = '';
-      this.panelEl.style.left = saved.left + 'px';
-      this.panelEl.style.top = saved.top + 'px';
+      this.panelEl.setCssStyles({ right: '', left: saved.left + 'px', top: saved.top + 'px' });
     } else if (anchorX !== undefined && anchorY !== undefined) {
       const panelWidth = 440;
       const panelHeight = 560;
@@ -187,10 +184,7 @@ export class AIChatPanel {
       const top = anchorY + panelHeight + 20 < window.innerHeight
         ? anchorY + 20
         : Math.max(20, anchorY - panelHeight - 20);
-      this.panelEl.style.right = '';
-      this.panelEl.style.top = '';
-      this.panelEl.style.left = left + 'px';
-      this.panelEl.style.top = top + 'px';
+      this.panelEl.setCssStyles({ right: '', left: left + 'px', top: top + 'px' });
     }
 
     // 点击外部关闭
@@ -256,14 +250,11 @@ export class AIChatPanel {
     this.dragOffsetX = e.clientX - rect.left;
     this.dragOffsetY = e.clientY - rect.top;
 
-    this.panelEl!.style.right = '';
-    this.panelEl!.style.left = rect.left + 'px';
-    this.panelEl!.style.top = rect.top + 'px';
+    this.panelEl!.setCssStyles({ right: '', left: rect.left + 'px', top: rect.top + 'px' });
 
     const onDragMove = (ev: MouseEvent) => {
       if (!this.isDragging) return;
-      this.panelEl!.style.left = (ev.clientX - this.dragOffsetX) + 'px';
-      this.panelEl!.style.top = (ev.clientY - this.dragOffsetY) + 'px';
+      this.panelEl!.setCssStyles({ left: (ev.clientX - this.dragOffsetX) + 'px', top: (ev.clientY - this.dragOffsetY) + 'px' });
     };
     const onDragEnd = () => {
       this.isDragging = false;
@@ -295,8 +286,7 @@ export class AIChatPanel {
       if (!this.isResizing) return;
       const newWidth = Math.max(320, startWidth + (ev.clientX - startX));
       const newHeight = Math.max(300, startHeight + (ev.clientY - startY));
-      this.panelEl!.style.width = newWidth + 'px';
-      this.panelEl!.style.height = newHeight + 'px';
+      this.panelEl!.setCssStyles({ width: newWidth + 'px', height: newHeight + 'px' });
     };
     const onResizeEnd = () => {
       this.isResizing = false;

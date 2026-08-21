@@ -104,6 +104,11 @@ export class PDFPatcher {
   private commentBubbles: CommentBubble[] = [];
   private lastSnapshot: SelectionSnapshot | null = null;
 
+  // ── 标注恢复相关 ──
+  private currentPagePath: string | null = null;
+  private restoreTimer: number | null = null;
+  private pdfViewerObserver: MutationObserver | null = null;
+
   constructor(private plugin: FleurPDFPlugin) {}
 
   install() {
@@ -114,6 +119,207 @@ export class PDFPatcher {
     document.addEventListener('contextmenu', this.boundContextMenu, true);
     document.addEventListener('mousedown', this.boundMouseDown, true);
     document.addEventListener('mouseup', this.boundMouseUp, true);
+
+    // 监听 file-open（文件切换时触发）
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on('file-open', (file) => {
+        if (file?.extension === 'pdf') {
+          this.currentPagePath = file.path;
+          this.scheduleRestore(file.path);
+          this.startPdfViewerWatcher();
+        } else {
+          this.currentPagePath = null;
+          this.stopPdfViewerWatcher();
+        }
+      })
+    );
+
+    // 监听 active-leaf-change（切换 tab 回来时也触发）
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on('active-leaf-change', (leaf) => {
+        const file = (leaf?.view as any)?.file;
+        if (file?.extension === 'pdf') {
+          if (file.path !== this.currentPagePath) {
+            this.currentPagePath = file.path;
+            this.startPdfViewerWatcher();
+          }
+          this.scheduleRestore(file.path);
+        }
+      })
+    );
+
+    // 在 body 上监听 PDF viewer 容器出现
+    const bodyWatcher = new MutationObserver(() => {
+      if (this.currentPagePath && document.querySelector('.pdf-viewer, .pdf-scroll-container, .pdf-container, .pdfViewer')) {
+        this.startPdfViewerWatcher();
+      }
+    });
+    bodyWatcher.observe(document.body, { childList: true, subtree: true });
+  }
+
+  private stopPdfViewerWatcher() {
+    if (this.pdfViewerObserver) {
+      this.pdfViewerObserver.disconnect();
+      this.pdfViewerObserver = null;
+    }
+  }
+
+  /** 用 MutationObserver 直接监听 PDF viewer 容器内的 .page 元素变化 */
+  private startPdfViewerWatcher() {
+    this.stopPdfViewerWatcher();
+    
+    // 查找 PDF viewer 容器
+    const container = document.querySelector('.pdf-viewer, .pdf-scroll-container, .pdf-container, .pdfViewer');
+    if (!container) return;
+    
+    this.pdfViewerObserver = new MutationObserver((mutations) => {
+      // 检查是否有新页面被添加
+      const hasNewPages = mutations.some(m => 
+        m.type === 'childList' && 
+        Array.from(m.addedNodes).some(node => 
+          (node as HTMLElement).classList?.contains('page') || 
+          (node as HTMLElement).querySelector?.('.page')
+        )
+      );
+      
+      if (hasNewPages && this.currentPagePath) {
+        this.scheduleRestore(this.currentPagePath);
+      }
+    });
+    
+    this.pdfViewerObserver.observe(container, { childList: true, subtree: true });
+  }
+
+  /** 等待 PDF 页面的 textLayer 真正有文本内容后再恢复 */
+  private async waitForTextLayer(pageEl: HTMLElement, maxWait = 8000): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < maxWait) {
+      const textLayer = pageEl.querySelector('.textLayer') as HTMLElement;
+      if (textLayer && (textLayer.textContent || '').trim().length > 0) {
+        return true;
+      }
+      await new Promise((r) => window.setTimeout(r, 300));
+    }
+    return false;
+  }
+
+  /** 延迟去抖后触发恢复（等待 PDF.js 渲染完成） */
+  private scheduleRestore(filePath: string, attempt = 0) {
+    if (this.restoreTimer) window.clearTimeout(this.restoreTimer);
+    // 指数退避：500ms → 1s → 2s → 3s → 5s
+    const delays = [500, 1000, 2000, 3000, 5000];
+    const delay = delays[Math.min(attempt, delays.length - 1)];
+    this.restoreTimer = window.setTimeout(() => {
+      void this.restoreAnnotationsForFile(filePath, attempt);
+    }, delay);
+  }
+
+  /** 为当前 PDF 文件恢复所有已保存的标注 */
+  async restoreAnnotationsForFile(filePath: string, attempt = 0): Promise<void> {
+    console.log('[FleurPDF] restoreAnnotationsForFile called for:', filePath, 'attempt:', attempt);
+    const data = await this.plugin.store.load(filePath);
+    console.log('[FleurPDF] Loaded data, annotations count:', data.annotations?.length || 0);
+    if (!data.annotations || data.annotations.length === 0) return;
+
+    const MAX_ATTEMPTS = 6;
+    let restored = 0;
+    let needsRetry = false;
+
+    for (const ann of data.annotations) {
+      // 实时检查 DOM 上是否已有该 ID 的标注元素（幂等）
+      if (document.querySelector(`[data-ann-id="${ann.id}"]`)) {
+        continue;
+      }
+
+      const pageEl = this.findPageByNumber(ann.page);
+      if (!pageEl) {
+        needsRetry = true;
+        continue;
+      }
+
+      // 等待 textLayer 渲染完成（首次和重试时都等待）
+      if (attempt === 0) {
+        // 首次尝试：异步等待 textLayer 就绪
+        const ready = await this.waitForTextLayer(pageEl, 5000);
+        if (!ready) {
+          needsRetry = true;
+          continue;
+        }
+      }
+
+      const textLayer = pageEl.querySelector('.textLayer') as HTMLElement;
+      if (!textLayer) {
+        needsRetry = true;
+        continue;
+      }
+
+      const textLayerContent = textLayer.textContent || '';
+      if (textLayerContent.trim().length === 0) {
+        needsRetry = true;
+        continue;
+      }
+
+      // 用文本匹配定位 segments
+      const segments = this._collectByTextMatch(ann.text, textLayer);
+      if (segments.length === 0) {
+        console.log('[FleurPDF] No segments found for annotation:', ann.id, 'attempt:', attempt);
+        // 仅在最后一次尝试时打印详细调试信息
+        if (attempt >= MAX_ATTEMPTS - 1) {
+          const normalizedTarget = this.normalizeText(ann.text);
+          const normalizedLayer = this.normalizeText(textLayerContent.substring(0, 100));
+          console.log('[FleurPDF] Target (raw):', ann.text.substring(0, 60));
+          console.log('[FleurPDF] Target (NFKC):', normalizedTarget.substring(0, 60));
+          console.log('[FleurPDF] Layer (raw):', textLayerContent.substring(0, 60));
+          console.log('[FleurPDF] Layer (NFKC):', normalizedLayer.substring(0, 60));
+        }
+        needsRetry = true;
+        continue;
+      }
+
+      if (ann.type === 'highlight' || ann.type === 'comment') {
+        const hlColor = ann.color || '#FFC107';
+        segments.forEach((seg) => {
+          this.wrapAndStyle(seg, (el) => {
+            el.setCssStyles({ background: hlColor });
+            el.addClass('fleur-highlight');
+            el.dataset['annId'] = ann.id;
+          });
+        });
+
+        // 恢复批注气泡
+        if (ann.type === 'comment' && ann.comment) {
+          const firstSpan = this.findAnnotationSpan(pageEl, ann.id);
+          if (firstSpan) {
+            this.addCommentBubble(ann.comment, firstSpan, pageEl, ann.id);
+          }
+        }
+      } else if (ann.type === 'underline') {
+        const ulColor = ann.color || '#E8590C';
+        segments.forEach((seg) => {
+          this.wrapAndStyle(seg, (el) => {
+            el.addClass('fleur-underline');
+            el.addClass(ann.underlineStyle === 'wavy' ? 'fleur-underline-wavy' : 'fleur-underline-solid');
+            el.setCssProps({ '--fleur-underline-color': ulColor });
+            el.dataset['annId'] = ann.id;
+          });
+        });
+      }
+
+      restored++;
+    }
+    console.log('[FleurPDF] Restore complete, restored:', restored, 'attempt:', attempt);
+
+    // 如果有标注未恢复且还有重试机会，调度下一次重试
+    if (needsRetry && attempt < MAX_ATTEMPTS) {
+      console.log('[FleurPDF] Scheduling retry, attempt:', attempt + 1);
+      this.scheduleRestore(filePath, attempt + 1);
+    }
+  }
+
+  /** 找到某个批注 ID 对应的第一个已标注 span */
+  private findAnnotationSpan(pageEl: HTMLElement, annId: string): HTMLElement | null {
+    const spans = pageEl.querySelectorAll(`[data-ann-id="${annId}"]`);
+    return spans.length > 0 ? (spans[0] as HTMLElement) : null;
   }
 
   // ════════════════════════════════════════════
@@ -281,7 +487,7 @@ export class PDFPatcher {
       hlBtn.addClass('fleur-context-item', 'fleur-context-hl');
       hlBtn.title = `高亮 ${idx + 1}`;
       const dot = hlBtn.createDiv({ cls: 'fleur-context-hl-dot' });
-      dot.style.background = color;
+      dot.setCssStyles({ background: color });
       hlBtn.addEventListener('click', () => {
         void this.applyHighlight(text, pageNum, segments, color, 'highlight', filePath);
         panel.remove();
@@ -379,8 +585,7 @@ export class PDFPatcher {
     if (posX < 8) posX = 8;
     if (posY < 8) posY = 8;
 
-    panel.style.left = `${posX}px`;
-    panel.style.top = `${posY}px`;
+    panel.setCssStyles({ left: `${posX}px`, top: `${posY}px` });
   }
 
   // ════════════════════════════════════════════
@@ -533,104 +738,118 @@ export class PDFPatcher {
     return null;
   }
 
-  /** 用文本内容在 textLayer 中匹配定位（回退方案） */
+  /**
+   * 规范化文本 — 使用 NFKC 统一视觉相同但编码不同的 Unicode 字符
+   * NFKC（Normalization Form Compatibility Composition）可处理：
+   *   - 康熙部首（U+2F00-U+2FD5）→ 标准 CJK 汉字
+   *   - 全角 ASCII / 标点 → 半角
+   *   - CJK 兼容字符 → 标准形式
+   */
+  private normalizeText(text: string): string {
+    return text
+      .normalize('NFKC')
+      // 去除零宽字符（NFKC 不会移除它们）
+      .replace(/[\u200B\u200C\u200D\uFEFF\u2060\uFFF9\uFFFA\uFFFB]/g, '');
+  }
+
+  /** 用文本内容在 textLayer 中匹配定位 */
   private _collectByTextMatch(targetText: string, textLayer: HTMLElement): TextSegment[] {
-    // 清理目标文本：去除首尾的引号、空白、标点
+    // 清理目标文本：去除首尾空白和标点
     const cleaned = targetText
       .trim()
-      .replace(/^\s+/, '')      // 去除开头空白
-      .replace(/\s+$/, '')      // 去除结尾空白
-      .replace(/^\p{P}+/u, '')  // 去除开头标点
-      .replace(/\p{P}+$/u, '')  // 去除结尾标点
+      .replace(/^\p{P}+/u, '')
+      .replace(/\p{P}+$/u, '')
       .trim();
     if (!cleaned) return [];
 
-    // 收集所有文本节点（不跳过 fleurSel 标记的节点，因为用户可能想对已高亮文本再次操作）
+    // 收集所有文本节点
     const nodes: { node: Text; content: string }[] = [];
     const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT, null);
     let n: Text | null;
     while ((n = walker.nextNode() as Text | null)) {
       const content = n.textContent || '';
-      if (!content.trim()) continue;  // 跳过纯空白节点
+      if (!content.trim()) continue;
       nodes.push({ node: n, content });
     }
+    if (nodes.length === 0) return [];
 
-    // 拼接全文（节点之间加空格，因为 PDF.js 的 span 之间视觉上是有间隔的）
+    // 拼接全文 — 不加空格！中文文本无词间空格，之前在节点间加空格导致匹配失败
     let fullText = '';
     const map: { node: Text; start: number; end: number }[] = [];
-    for (let i = 0; i < nodes.length; i++) {
-      const { node, content } = nodes[i];
-      if (i > 0) fullText += ' ';  // 节点间加空格
+    for (const { node, content } of nodes) {
       const s = fullText.length;
       fullText += content;
       map.push({ node, start: s, end: fullText.length });
     }
 
-    // 策略1: 精确匹配（清理后）
-    let idx = fullText.indexOf(cleaned);
+    // 策略1: 精确匹配
+    const idx = fullText.indexOf(cleaned);
     if (idx !== -1) {
       return this._textRangeToSegments(map, idx, idx + cleaned.length);
     }
 
-    // 策略2: 归一化空白匹配（处理 PDF.js 中多空格/换行的差异）
-    const normFull = fullText.replace(/\s+/g, ' ').replace(/[\u200B\u200C\u200D\uFEFF]+/g, '').trim();
-    const normTarget = cleaned.replace(/\s+/g, ' ').replace(/[\u200B\u200C\u200D\uFEFF]+/g, '').trim();
-    const nIdx = normFull.indexOf(normTarget);
-    if (nIdx !== -1) {
-      const [origStart, origEnd] = this._normToOrig(fullText, nIdx, nIdx + normTarget.length);
-      if (origStart >= 0 && origEnd > origStart) {
-        const r = this._textRangeToSegments(map, origStart, origEnd);
-        if (r.length > 0) {
-          return r;
+    // 策略2: NFKC 规范化匹配（康熙部首 U+2F00-U+2FD5 → 标准 CJK）
+    // NFKC 对 CJK 字符是一对一映射，长度不变，位置可直接对应
+    const nfkcFull = this.normalizeText(fullText);
+    const nfkcTarget = this.normalizeText(cleaned);
+    if (nfkcFull.length === fullText.length) {
+      const nIdx = nfkcFull.indexOf(nfkcTarget);
+      if (nIdx !== -1) {
+        return this._textRangeToSegments(map, nIdx, nIdx + nfkcTarget.length);
+      }
+    }
+
+    // 策略3: 去空格匹配（处理 textLayer 中 span 间的空白/换行差异）
+    const noWsFull = fullText.replace(/\s+/g, '');
+    const noWsTarget = cleaned.replace(/\s+/g, '');
+    if (noWsTarget.length >= 3) {
+      const nsIdx = noWsFull.indexOf(noWsTarget);
+      if (nsIdx !== -1) {
+        const [oStart, oEnd] = this._noWsToOrig(fullText, nsIdx, nsIdx + noWsTarget.length);
+        if (oStart >= 0 && oEnd > oStart) {
+          return this._textRangeToSegments(map, oStart, oEnd);
         }
       }
     }
 
-    // 策略3: 按词逐个匹配（最高容错率）
-    const words = normTarget.split(/\s+/).filter(w => w.length > 0);
-    if (words.length >= 2) {
-      const firstIdx = normFull.indexOf(words[0]);
-      if (firstIdx !== -1) {
-        let searchPos = firstIdx + words[0].length;
-        let lastEnd = searchPos;
-        let allFound = true;
-        for (let wi = 1; wi < words.length; wi++) {
-          const area = normFull.substring(searchPos, searchPos + 15 + words[wi].length);
-          const wIdx = area.indexOf(words[wi]);
-          if (wIdx >= 0) {
-            lastEnd = searchPos + wIdx + words[wi].length;
-            searchPos = lastEnd;
-          } else { allFound = false; break; }
-        }
-        if (allFound || words.length <= 3) {
-          const [o1, o2] = this._normToOrig(fullText, firstIdx, lastEnd);
-          if (o1 >= 0 && o2 > o1) {
-            const r = this._textRangeToSegments(map, o1, o2);
-            if (r.length > 0) {
-              return r;
-            }
+    // 策略4: NFKC + 去空格双重匹配
+    if (nfkcFull.length === fullText.length) {
+      const noWsNfkcFull = nfkcFull.replace(/\s+/g, '');
+      const noWsNfkcTarget = nfkcTarget.replace(/\s+/g, '');
+      if (noWsNfkcTarget.length >= 3) {
+        const nsNfkcIdx = noWsNfkcFull.indexOf(noWsNfkcTarget);
+        if (nsNfkcIdx !== -1) {
+          const [oStart, oEnd] = this._noWsToOrig(fullText, nsNfkcIdx, nsNfkcIdx + noWsNfkcTarget.length);
+          if (oStart >= 0 && oEnd > oStart) {
+            return this._textRangeToSegments(map, oStart, oEnd);
           }
         }
+      }
+    }
+
+    // 策略5: 前缀匹配（取目标前 10 字符，容错性最高）
+    const prefix = nfkcTarget.substring(0, Math.min(10, nfkcTarget.length));
+    if (prefix.length >= 4 && nfkcFull.length === fullText.length) {
+      const pIdx = nfkcFull.indexOf(prefix);
+      if (pIdx !== -1) {
+        const endPos = Math.min(pIdx + nfkcTarget.length, nfkcFull.length);
+        return this._textRangeToSegments(map, pIdx, endPos);
       }
     }
 
     return [];
   }
 
-  /** 将归一化位置映射回原始文本位置 */
-  private _normToOrig(fullText: string, normStart: number, normEnd: number): [number, number] {
-    let normPos = 0;
+  /** 将去空格后的位置映射回原始文本位置 */
+  private _noWsToOrig(fullText: string, wsStart: number, wsEnd: number): [number, number] {
+    let wsPos = 0;
     let oStart = -1;
     let oEnd = -1;
     for (let i = 0; i < fullText.length; i++) {
-      if (/\s/.test(fullText[i]) || /[\u200B\u200C\u200D\uFEFF]/.test(fullText[i])) {
-        while (i + 1 < fullText.length && (/\s/.test(fullText[i + 1]) || /[\u200B\u200C\u200D\uFEFF]/.test(fullText[i + 1]))) i++;
-        if (normPos > 0) normPos++;
-        continue;
-      }
-      if (normPos === normStart && oStart === -1) oStart = i;
-      if (normPos === normEnd - 1) { oEnd = i + 1; break; }
-      normPos++;
+      if (/\s/.test(fullText[i])) continue;
+      if (wsPos === wsStart) oStart = i;
+      if (wsPos === wsEnd - 1) { oEnd = i + 1; break; }
+      wsPos++;
     }
     return [oStart, oEnd];
   }
@@ -711,7 +930,7 @@ export class PDFPatcher {
 
     segments.forEach((seg) => {
       this.wrapAndStyle(seg, (el) => {
-        el.style.background = color;
+        el.setCssStyles({ background: color });
         el.addClass('fleur-highlight');
         el.dataset['annId'] = annId;
       });
@@ -734,7 +953,7 @@ export class PDFPatcher {
       this.wrapAndStyle(seg, (el) => {
         el.addClass('fleur-underline');
         el.addClass(style === 'wavy' ? 'fleur-underline-wavy' : 'fleur-underline-solid');
-        el.style.setProperty('--fleur-underline-color', color); // eslint-disable-line no-restricted-syntax
+        el.setCssProps({ '--fleur-underline-color': color });
         el.dataset['annId'] = annId;
       });
     });
@@ -791,7 +1010,7 @@ export class PDFPatcher {
     quoteBlock.addClass('fleur-comment-dialog-quote');
     const quoteBar = quoteBlock.createDiv();
     quoteBar.addClass('fleur-comment-dialog-quote-bar');
-    quoteBar.style.setProperty('--fleur-hl-color', hlColor); // eslint-disable-line no-restricted-syntax
+    quoteBar.setCssProps({ '--fleur-hl-color': hlColor });
     const quoteText = quoteBlock.createDiv();
     quoteText.addClass('fleur-comment-dialog-quote-text');
     quoteText.textContent = text;
@@ -849,7 +1068,7 @@ export class PDFPatcher {
         const styledSpans: HTMLElement[] = [];
         segments.forEach((seg) => {
           const span = this.wrapAndStyle(seg, (el) => {
-            el.style.background = hlColor;
+            el.setCssStyles({ background: hlColor });
             el.addClass('fleur-highlight');
             el.dataset['annId'] = annId;
           });
@@ -865,7 +1084,7 @@ export class PDFPatcher {
               const retrySegments = this._collectByTextMatch(text, textLayer);
               retrySegments.forEach((seg) => {
                 const span = this.wrapAndStyle(seg, (el) => {
-                  el.style.background = hlColor;
+                  el.setCssStyles({ background: hlColor });
                   el.addClass('fleur-highlight');
                   el.dataset['annId'] = annId;
                 });
@@ -934,8 +1153,7 @@ export class PDFPatcher {
     const wrapper = pageEl.createDiv();
     wrapper.addClass('fleur-comment-bubble');
     if (annId) wrapper.dataset['annId'] = annId;
-    wrapper.style.left = `${anchorX}px`;
-    wrapper.style.top = `${anchorY - 6}px`;
+    wrapper.setCssStyles({ left: `${anchorX}px`, top: `${anchorY - 6}px` });
 
     const icon = wrapper.createDiv();
     icon.addClass('fleur-comment-bubble-icon');
@@ -1021,6 +1239,12 @@ export class PDFPatcher {
   // ════════════════════════════════════════════
 
   uninstall() {
+    // 清理恢复定时器
+    if (this.restoreTimer) {
+      window.clearTimeout(this.restoreTimer);
+      this.restoreTimer = null;
+    }
+
     if (this.boundContextMenu) {
       document.removeEventListener('contextmenu', this.boundContextMenu, true);
       this.boundContextMenu = null;
