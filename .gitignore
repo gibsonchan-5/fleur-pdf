@@ -2,7 +2,8 @@
 node_modules/
 
 # Build output
-main.js
+# NOTE: main.js must be committed — Obsidian community plugins require
+# main.js, manifest.json and styles.css in the repository root.
 *.js.map
 
 # IDE

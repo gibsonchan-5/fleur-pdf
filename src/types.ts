@@ -3,6 +3,7 @@ export interface Annotation {
   id: string;
   type: 'highlight' | 'underline' | 'comment';
   page: number;
+  endPage?: number; // 跨页标注的结束页码
   text: string;
   comment?: string;
   color?: string;

@@ -31,6 +31,18 @@ export default class FleurPDFPlugin extends Plugin {
       callback: () => { void this.activateSidebar(); }
     });
 
+    this.addCommand({
+      id: 'restore-annotations',
+      name: '重新渲染当前 PDF 的标注',
+      callback: () => { this.patcher.restoreNow(); }
+    });
+
+    this.addCommand({
+      id: 'diagnose-pdf',
+      name: '诊断当前 PDF 结构',
+      callback: () => { this.patcher.diagnose(); }
+    });
+
     this.addSettingTab(new FleurSettingTab(this.app, this));
 
     // 监听文件切换，刷新侧边栏
