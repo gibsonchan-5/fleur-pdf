@@ -161,6 +161,8 @@
   flex: 1;
   overflow-y: auto;
   padding: 16px 18px 8px;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .fleur-ai-footer {
