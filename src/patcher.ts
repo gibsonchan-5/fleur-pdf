@@ -405,6 +405,14 @@ export class PDFPatcher {
             el.dataset['annId'] = ann.id;
           });
         });
+
+        // 恢复批注气泡（下划线也可能有 AI 批注）
+        if (ann.comment && firstPageEl) {
+          const firstSpan = this.findAnnotationSpan(firstPageEl, ann.id);
+          if (firstSpan) {
+            this.addCommentBubble(ann.comment, firstSpan, firstPageEl, ann.id);
+          }
+        }
       }
 
       restored++;

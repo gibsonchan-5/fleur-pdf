@@ -608,7 +608,7 @@ export class SidebarView extends ItemView {
         const target = data.annotations.find(a => a.id === ann.id);
         if (target) {
           target.comment = comment;
-          target.type = 'comment'; // 确保恢复逻辑识别为批注（恢复条件: type === 'comment'）
+          // 保留原始 type（highlight/underline），恢复逻辑通过 ann.comment 识别气泡
           await this.plugin.store.save(data);
 
           // 同步气泡
