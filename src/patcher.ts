@@ -10,6 +10,7 @@ import { Menu, Modal, Notice } from 'obsidian';
 import type FleurPDFPlugin from './main';
 import type { Annotation } from './types';
 import { AIChatPanel } from './ai-chat-modal';
+import { markdownToPlain } from './md-utils';
 
 type UnderlineStyle = 'solid' | 'wavy';
 
@@ -122,6 +123,7 @@ export class PDFPatcher {
   private currentPagePath: string | null = null;
   private restoreTimer: number | null = null;
   private pdfViewerObserver: MutationObserver | null = null;
+  private pdfResizeObserver: ResizeObserver | null = null;
 
   constructor(private plugin: FleurPDFPlugin) {}
 
@@ -178,6 +180,10 @@ export class PDFPatcher {
       this.pdfViewerObserver.disconnect();
       this.pdfViewerObserver = null;
     }
+    if (this.pdfResizeObserver) {
+      this.pdfResizeObserver.disconnect();
+      this.pdfResizeObserver = null;
+    }
   }
 
   /** 用 MutationObserver 直接监听 PDF viewer 容器内的 .page 元素变化 */
@@ -202,6 +208,14 @@ export class PDFPatcher {
     });
 
     this.pdfViewerObserver.observe(container, { childList: true, subtree: true });
+
+    // 新增：监听容器宽度变化（侧边栏收起/展开会改变 PDF 容器尺寸，触发 PDF.js 重渲染）
+    this.pdfResizeObserver = new ResizeObserver(() => {
+      if (this.currentPagePath) {
+        this.scheduleRestore(this.currentPagePath);
+      }
+    });
+    this.pdfResizeObserver.observe(container);
   }
 
   /** 等待 PDF 页面的 textLayer 真正有文本内容后再恢复 */
@@ -287,22 +301,15 @@ export class PDFPatcher {
     let needsRetry = false;
 
     for (const ann of data.annotations) {
-      // 实时检查 DOM 上是否已有该 ID 的标注元素（幂等）
-      if (document.querySelector(`[data-ann-id="${ann.id}"]`)) {
-        continue;
-      }
-
       const startPage = ann.page;
       const endPage = ann.endPage || ann.page;
 
       // ── 跨页标注：先把标注文本按页切分，再逐页匹配 ──
-      // （旧实现对每页都用完整全文匹配，单页中不存在完整文本，必然失败）
       let pagePortions: Array<{ page: number; text: string }>;
       if (endPage > startPage) {
         const split = this.splitAnnotationTextByPage(ann.text, startPage, endPage);
         pagePortions = Array.from(split.entries()).map(([page, text]) => ({ page, text }));
         if (pagePortions.length === 0) {
-          // 切分失败（页面可能还没渲染）→ 等重试
           needsRetry = true;
           continue;
         }
@@ -312,6 +319,7 @@ export class PDFPatcher {
 
       const allSegments: TextSegment[] = [];
       let firstPageEl: HTMLElement | null = null;
+      let anyPageProcessed = false;
 
       for (const { page, text } of pagePortions) {
         const pageEl = this.findPageByNumber(page);
@@ -339,16 +347,33 @@ export class PDFPatcher {
           continue;
         }
 
+        // 逐页幂等：该页已有此标注则跳过，不跳过其他页
+        if (pageEl.querySelector(`[data-ann-id="${ann.id}"]`)) {
+          if (!firstPageEl) firstPageEl = pageEl;
+          continue;
+        }
+
         if (!firstPageEl) {
           firstPageEl = pageEl;
         }
 
         allSegments.push(...this._collectByTextMatch(text, textLayer));
+        anyPageProcessed = true;
       }
 
       if (allSegments.length === 0) {
-        console.log('[FleurPDF] restore: no segments for', ann.id, 'attempt', attempt);
-        needsRetry = true;
+        if (anyPageProcessed) {
+          // 所有页都已恢复过，不需要重试
+        } else if (firstPageEl) {
+          // 所有页的高亮都已存在（逐页幂等通过），尝试恢复气泡
+          const existingSpan = firstPageEl.querySelector(`[data-ann-id="${ann.id}"]`);
+          if (existingSpan && ann.comment) {
+            this.addCommentBubble(ann.comment, existingSpan as HTMLElement, firstPageEl, ann.id);
+          }
+        } else {
+          console.log('[FleurPDF] restore: no segments for', ann.id, 'attempt', attempt);
+          needsRetry = true;
+        }
         continue;
       }
 
@@ -363,7 +388,8 @@ export class PDFPatcher {
         });
 
         // 恢复批注气泡（只在第一页显示）
-        if (ann.type === 'comment' && ann.comment && firstPageEl) {
+        // 兜底：只要有 comment 字段就恢复（兼容历史 AI 批注 type 仍为 'highlight' 的情况）
+        if (ann.comment && firstPageEl) {
           const firstSpan = this.findAnnotationSpan(firstPageEl, ann.id);
           if (firstSpan) {
             this.addCommentBubble(ann.comment, firstSpan, firstPageEl, ann.id);
@@ -1061,7 +1087,24 @@ export class PDFPatcher {
     tail.addClass('fleur-comment-bubble-tail');
 
     const textEl = popup.createDiv();
-    textEl.textContent = comment;
+    const plainText = markdownToPlain(comment);
+    textEl.textContent = plainText;
+
+    // 长批注默认折叠（>80 字符）
+    if (plainText.length > 80) {
+      textEl.addClass('is-clamped');
+      const toggle = popup.createDiv({ text: '展开' });
+      toggle.addClass('fleur-comment-toggle');
+      toggle.addEventListener('click', () => {
+        if (textEl.hasClass('is-clamped')) {
+          textEl.removeClass('is-clamped');
+          toggle.textContent = '收起';
+        } else {
+          textEl.addClass('is-clamped');
+          toggle.textContent = '展开';
+        }
+      });
+    }
 
     wrapper.appendChild(icon);
     wrapper.appendChild(popup);

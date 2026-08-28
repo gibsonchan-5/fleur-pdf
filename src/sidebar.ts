@@ -3,6 +3,7 @@ import { ItemView, WorkspaceLeaf, Notice, MarkdownRenderer, TFile } from 'obsidi
 import type FleurPDFPlugin from './main';
 import type { Annotation, PDFAnnotationData } from './types';
 import { AIService } from './ai-service';
+import { markdownToPlain } from './md-utils';
 
 export const VIEW_TYPE_SIDEBAR = 'fleur-sidebar';
 
@@ -285,16 +286,28 @@ export class SidebarView extends ItemView {
 
     const text = wrap.createDiv();
     text.addClass('fleur-sidebar-comment-text');
-    // 用 MarkdownRenderer 渲染批注内容（支持 **加粗**、标题、列表等格式）
+    // 用纯文本显示批注内容（去除 MD 源码）
     if (ann.comment) {
-      void MarkdownRenderer.renderMarkdown(
-        ann.comment,
-        text,
-        this.app.workspace.getActiveFile()?.path ?? '',
-        this.plugin
-      );
+      text.textContent = markdownToPlain(ann.comment);
     } else {
       text.textContent = '';
+    }
+
+    // 长批注默认折叠（>120 字符）
+    const plainLen = ann.comment ? markdownToPlain(ann.comment).length : 0;
+    if (plainLen > 120) {
+      text.addClass('is-clamped');
+      const toggle = wrap.createDiv({ text: '展开全文' });
+      toggle.addClass('fleur-comment-toggle');
+      toggle.addEventListener('click', () => {
+        if (text.hasClass('is-clamped')) {
+          text.removeClass('is-clamped');
+          toggle.textContent = '收起';
+        } else {
+          text.addClass('is-clamped');
+          toggle.textContent = '展开全文';
+        }
+      });
     }
 
     // 悬停操作（右上角）
@@ -393,7 +406,7 @@ export class SidebarView extends ItemView {
     })(); });
 
     textarea.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         saveBtn.click();
       }
@@ -506,7 +519,7 @@ export class SidebarView extends ItemView {
     })(); });
 
     textarea.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      if (e.key === 'Enter') {
         e.preventDefault();
         saveBtn.click();
       }
@@ -551,10 +564,15 @@ export class SidebarView extends ItemView {
     const aiService = new AIService(this.plugin);
     const fullResponse: string[] = [];
 
+    // 使用自定义 Prompt，如果设置了；否则使用默认
+    const systemPrompt = this.plugin.settings.customPrompt?.trim() 
+      ? this.plugin.settings.customPrompt.trim()
+      : '你是一位专业的文献阅读助手。请根据用户提供的高亮文本，给出简明扼要的批注，包括：关键词释义、核心要点、深层含义。批注应简洁有力，适合用作阅读笔记。请用中文回答。';
+
     const messages = [
       {
         role: 'system' as const,
-        content: '你是一位专业的文献阅读助手。请根据用户提供的高亮文本，给出简明扼要的批注，包括：关键词释义、核心要点、深层含义。批注应简洁有力，适合用作阅读笔记。请用中文回答。'
+        content: systemPrompt
       },
       {
         role: 'user' as const,
@@ -566,8 +584,8 @@ export class SidebarView extends ItemView {
       messages,
       (chunk) => {
         fullResponse.push(chunk);
-        // 实时显示正在生成的内容
-        const currentText = fullResponse.join('');
+        // 实时显示正在生成的内容（纯文本，避免 MD 源码闪烁）
+        const currentText = markdownToPlain(fullResponse.join(''));
         loadingText.textContent = currentText;
         loadingText.addClass('fleur-sidebar-ai-loading-text-streaming');
       },
@@ -590,6 +608,7 @@ export class SidebarView extends ItemView {
         const target = data.annotations.find(a => a.id === ann.id);
         if (target) {
           target.comment = comment;
+          target.type = 'comment'; // 确保恢复逻辑识别为批注（恢复条件: type === 'comment'）
           await this.plugin.store.save(data);
 
           // 同步气泡

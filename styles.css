@@ -563,6 +563,26 @@
   padding-right: 36px;
 }
 
+.fleur-sidebar-comment-text.is-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.fleur-comment-toggle {
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  margin-top: 4px;
+  user-select: none;
+}
+
+.fleur-comment-toggle:hover {
+  color: var(--text-normal);
+  text-decoration: underline;
+}
+
 .fleur-sidebar-comment-ops {
   position: absolute;
   top: 6px;
@@ -896,7 +916,7 @@
   left: 22px;
   top: -8px;
   min-width: 140px;
-  max-width: 220px;
+  max-width: 280px;
   background: rgba(91, 106, 191, 0.85);
   color: #fff;
   font-size: 12px;
@@ -907,6 +927,28 @@
   word-break: break-word;
   display: none;
   z-index: 50;
+}
+
+.fleur-comment-bubble-popup .is-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  max-height: 120px;
+}
+
+.fleur-comment-bubble-popup .fleur-comment-toggle {
+  font-size: 11px;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  margin-top: 4px;
+  user-select: none;
+  text-align: right;
+}
+
+.fleur-comment-bubble-popup .fleur-comment-toggle:hover {
+  color: #fff;
+  text-decoration: underline;
 }
 
 .fleur-comment-bubble:hover .fleur-comment-bubble-popup {

@@ -14,7 +14,7 @@ export class AIService {
     onError?: (error: string) => void,
     signal?: AbortSignal
   ): Promise<void> {
-    const { apiKey, baseUrl, model } = this.plugin.settings;
+    const { apiKey, baseUrl, model, temperature } = this.plugin.settings;
 
     if (!apiKey) {
       onError?.('请先在设置中配置 API Key');
@@ -35,7 +35,8 @@ export class AIService {
         body: JSON.stringify({
           model,
           messages,
-          stream: true
+          stream: true,
+          temperature
         }),
         signal
       });

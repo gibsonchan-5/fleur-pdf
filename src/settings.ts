@@ -7,6 +7,8 @@ export interface FleurSettings {
   apiKey: string;
   baseUrl: string;
   model: string;
+  temperature: number; // AI 温度参数
+  customPrompt: string; // 自定义 AI prompt
 
   // 标注默认值
   highlightColors: string[]; // 3种高亮颜色
@@ -28,6 +30,8 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   apiKey: '',
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-chat',
+  temperature: 0.7,
+  customPrompt: '',
   highlightColors: ['#D4A017', '#2979C4', '#D32F2F'], // 深金、深蓝、深红
   underlineColor: '#6B0000', // 极深红
   noteFolder: 'FleurReader',
@@ -111,6 +115,31 @@ export class FleurSettingTab extends PluginSettingTab {
         .setValue(this.plugin.settings.model)
         .onChange(async (value) => {
           this.plugin.settings.model = value;
+          await this.plugin.saveSettings();
+        }));
+
+    // 温度参数
+    new Setting(containerEl)
+      .setName('AI 温度')
+      .setDesc('控制 AI 输出的随机性。值越高（如 1.0）输出越多样，值越低（如 0.1）输出越保守')
+      .addSlider(slider => slider
+        .setLimits(0, 1, 0.1)
+        .setValue(this.plugin.settings.temperature)
+        .setDynamicTooltip()
+        .onChange(async (value) => {
+          this.plugin.settings.temperature = value;
+          await this.plugin.saveSettings();
+        }));
+
+    // 自定义 Prompt
+    new Setting(containerEl)
+      .setName('自定义 AI Prompt')
+      .setDesc('自定义 AI 生成批注时的系统提示词。留空则使用默认提示词')
+      .addTextArea(text => text
+        .setPlaceholder('你是一位专业的文献阅读助手。请根据用户提供的高亮文本，给出简明扼要的批注……')
+        .setValue(this.plugin.settings.customPrompt)
+        .onChange(async (value) => {
+          this.plugin.settings.customPrompt = value;
           await this.plugin.saveSettings();
         }));
 
