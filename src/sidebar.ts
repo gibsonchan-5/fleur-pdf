@@ -4,6 +4,7 @@ import type FleurPDFPlugin from './main';
 import type { Annotation, PDFAnnotationData } from './types';
 import { AIService } from './ai-service';
 import { markdownToPlain } from './md-utils';
+import { normalizeWhitespace } from './text-utils';
 
 export const VIEW_TYPE_SIDEBAR = 'fleur-sidebar';
 
@@ -38,6 +39,18 @@ const SVG_ATTRS = {
   stroke: 'currentColor', 'stroke-width': '2',
   'stroke-linecap': 'round', 'stroke-linejoin': 'round',
 };
+
+/** 根据背景色亮度挑选可读的前景色（黑/白），用于导出 Markdown 高亮底色下的文字 */
+function pickReadableFg(bg: string): string {
+  const hex = bg.replace('#', '');
+  if (hex.length !== 3 && hex.length !== 6) return '#000';
+  const r = parseInt(hex.length === 3 ? hex[0] + hex[0] : hex.slice(0, 2), 16);
+  const g = parseInt(hex.length === 3 ? hex[1] + hex[1] : hex.slice(2, 4), 16);
+  const b = parseInt(hex.length === 3 ? hex[2] + hex[2] : hex.slice(4, 6), 16);
+  // sRGB 相对亮度阈值 0.6 经验值（黑/白分明）
+  const luma = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luma > 0.6 ? '#000' : '#fff';
+}
 
 export class SidebarView extends ItemView {
   private data: PDFAnnotationData | null = null;
@@ -219,7 +232,7 @@ export class SidebarView extends ItemView {
 
     const textEl = textWrap.createDiv();
     textEl.addClass('fleur-sidebar-card-text');
-    textEl.textContent = ann.text;
+    textEl.textContent = normalizeWhitespace(ann.text);
     textEl.setAttribute('title', '点击查看完整内容');
     textEl.addEventListener('click', () => {
       textEl.classList.toggle('fleur-text-expanded');
@@ -288,7 +301,7 @@ export class SidebarView extends ItemView {
     text.addClass('fleur-sidebar-comment-text');
     // 用纯文本显示批注内容（去除 MD 源码）
     if (ann.comment) {
-      text.textContent = markdownToPlain(ann.comment);
+      text.textContent = markdownToPlain(normalizeWhitespace(ann.comment));
     } else {
       text.textContent = '';
     }
@@ -585,7 +598,7 @@ export class SidebarView extends ItemView {
       (chunk) => {
         fullResponse.push(chunk);
         // 实时显示正在生成的内容（纯文本，避免 MD 源码闪烁）
-        const currentText = markdownToPlain(fullResponse.join(''));
+        const currentText = markdownToPlain(normalizeWhitespace(fullResponse.join('')));
         loadingText.textContent = currentText;
         loadingText.addClass('fleur-sidebar-ai-loading-text-streaming');
       },
@@ -697,15 +710,25 @@ export class SidebarView extends ItemView {
       sortedPages.forEach(pageNum => {
         md += `## 第 ${pageNum} 页\n\n`;
         grouped.get(pageNum)!.forEach(ann => {
+          // ann.text / ann.comment 在写入存储时已 normalizeWhitespace 收敛为单行；
+          // 此处再兜底 normalize 一次以兼容历史数据（避免 ==...== 跨段被切断）。
+          const annText = normalizeWhitespace(ann.text);
+          const annComment = ann.comment ? normalizeWhitespace(ann.comment) : '';
           if (ann.type === 'highlight') {
-            md += `==${ann.text}==\n\n`;
+            // 高亮：保留 PDF 中的具体底色（默认用 settings.highlightColors[0]）
+            const hlColor = ann.color || '#FFC107';
+            const fg = pickReadableFg(hlColor);
+            md += `<span style="background-color:${hlColor};color:${fg};padding:0 2px;border-radius:2px">${annText}</span>\n\n`;
           } else if (ann.type === 'underline') {
-            md += `<u>${ann.text}</u>\n\n`;
+            // 划线：保留 PDF 中的具体下划线颜色，wavy 用波浪线
+            const ulColor = ann.color || '#E8590C';
+            const style = ann.underlineStyle === 'wavy' ? 'wavy' : 'solid';
+            md += `<span style="text-decoration:underline;text-decoration-color:${ulColor};text-decoration-style:${style}">${annText}</span>\n\n`;
           } else {
-            md += `<span style="color:var(--text-muted)">${ann.text}</span>\n\n`;
+            md += `<span style="color:var(--text-muted)">${annText}</span>\n\n`;
           }
-          if (ann.comment) {
-            md += `> ${ann.comment}\n\n`;
+          if (annComment) {
+            md += `> ${annComment}\n\n`;
           }
           md += `---\n\n`;
         });

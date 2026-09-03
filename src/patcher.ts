@@ -11,6 +11,7 @@ import type FleurPDFPlugin from './main';
 import type { Annotation } from './types';
 import { AIChatPanel } from './ai-chat-modal';
 import { markdownToPlain } from './md-utils';
+import { normalizeWhitespace } from './text-utils';
 
 type UnderlineStyle = 'solid' | 'wavy';
 
@@ -579,8 +580,8 @@ export class PDFPatcher {
       }
       if (!inter) continue;
 
-      const text = inter.toString();
-      if (!text.trim()) continue;
+      const text = normalizeWhitespace(inter.toString());
+      if (!text) continue;
 
       let segments = this.collectSegmentsInRange(inter, textLayer);
       if (segments.length === 0) {
@@ -1095,7 +1096,7 @@ export class PDFPatcher {
     tail.addClass('fleur-comment-bubble-tail');
 
     const textEl = popup.createDiv();
-    const plainText = markdownToPlain(comment);
+    const plainText = markdownToPlain(normalizeWhitespace(comment));
     textEl.textContent = plainText;
 
     // 长批注默认折叠（>80 字符）
