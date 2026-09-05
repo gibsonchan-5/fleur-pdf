@@ -5,6 +5,7 @@
 import { Notice, MarkdownRenderer } from 'obsidian';
 import type FleurPDFPlugin from './main';
 import { AIService } from './ai-service';
+import { resolveSystemPrompt, resolveAskHint } from './ai-prompts';
 
 /** Create an SVG element (SVG tags aren't in HTMLElementTagNameMap, so createElementNS is required) */
 function createSvgEl(parent: Node, tag: string, attrs?: Record<string, string>): SVGElement {
@@ -311,14 +312,18 @@ export class AIChatPanel {
     let userMessage: string;
 
     if (this.mode === 'translate') {
-      // 翻译模式
+      // 翻译模式：专用角色，保持独立，不跟随「提示词模式」设置
       systemPrompt = '你是一位专业的翻译助手。请将用户提供的文本翻译成中文，保持原文的语义和风格。如果原文已经是中文，则翻译成英文。回答时只给出翻译结果，不需要额外解释。';
       userMessage = `请翻译以下内容：\n\n「${this.selectedText}」`;
     } else {
-      // 解释模式（默认）
-      systemPrompt = '你是一位专业的文献阅读助手。请根据用户选中的文本内容，给出准确、有条理、有深度的回答。回答时使用 Markdown 格式，标题用 ## 或 ###，重点加粗。';
-      const question = '请解释这段内容的含义，包括关键词释义、背景要点和深层逻辑。';
-      userMessage = `以下是我从文档中选中的内容：\n\n「${this.selectedText}」\n\n${question}`;
+      // 解释模式：跟随设置里选的「提示词模式」，但作为对话场景不设字数限制
+      systemPrompt = resolveSystemPrompt(
+        this.plugin.settings.promptPreset,
+        this.plugin.settings.customPrompt
+      );
+      systemPrompt += '回答时使用 Markdown 格式，标题用 ## 或 ###，重点加粗。';
+      const hint = resolveAskHint(this.plugin.settings.promptPreset);
+      userMessage = `以下是我从文档中选中的内容：\n\n「${this.selectedText}」\n\n${hint}`;
     }
 
     this.chatHistory = [

@@ -100,7 +100,16 @@ export default class FleurPDFPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const saved = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+    // 迁移：早期版本只有单一的「自定义 Prompt」文本框。已填写过内容的用户
+    // 升级后自动落到「自定义」模式，避免他们写好的提示词被预设静默覆盖。
+    if (
+      saved && !('promptPreset' in saved) &&
+      typeof saved.customPrompt === 'string' && saved.customPrompt.trim()
+    ) {
+      this.settings.promptPreset = 'custom';
+    }
   }
 
   async saveSettings() {

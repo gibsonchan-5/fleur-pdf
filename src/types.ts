@@ -9,6 +9,11 @@ export interface Annotation {
   color?: string;
   underlineStyle?: 'solid' | 'wavy';
   createdAt: number;
+  /**
+   * 选区起点在该页内的相对位置（相对 .page 元素左上角，单位 px）。
+   * 用于「按行文顺序」排序；历史数据可能没有，排序时会退化为按时间。
+   */
+  pos?: { top: number; left: number };
 }
 
 export interface AIResult {

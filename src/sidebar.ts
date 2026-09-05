@@ -5,6 +5,7 @@ import type { Annotation, PDFAnnotationData } from './types';
 import { AIService } from './ai-service';
 import { markdownToPlain } from './md-utils';
 import { normalizeWhitespace } from './text-utils';
+import { resolveSystemPrompt } from './ai-prompts';
 
 export const VIEW_TYPE_SIDEBAR = 'fleur-sidebar';
 
@@ -182,9 +183,34 @@ export class SidebarView extends ItemView {
       pageTag.addClass('fleur-sidebar-page-tag');
       pageTag.textContent = `p.${pageNum}`;
 
-      grouped.get(pageNum)!.forEach(ann => {
+      this.sortAnnotations(grouped.get(pageNum)!).forEach(ann => {
         this.renderAnnotation(section, ann);
       });
+    });
+  }
+
+  /**
+   * 同一页内多条批注的排序。
+   * - time（默认）：按创建时间先后
+   * - position：按行文顺序，即文字在页面上的位置，从上到下、从左到右
+   * 缺少位置信息的历史标注会排在最后，并按时间兜底。
+   */
+  private sortAnnotations(list: Annotation[]): Annotation[] {
+    const arr = list.slice();
+    if (this.plugin.settings.annotationSort !== 'position') {
+      return arr.sort((a, b) => a.createdAt - b.createdAt);
+    }
+    // 视作同一行的纵向容差（归一化坐标，约合半行高）
+    const SAME_LINE = 0.01;
+    return arr.sort((a, b) => {
+      const hasA = a.pos ? 0 : 1;
+      const hasB = b.pos ? 0 : 1;
+      if (hasA !== hasB) return hasA - hasB;
+      if (hasA === 1) return a.createdAt - b.createdAt;
+      const pa = a.pos!;
+      const pb = b.pos!;
+      if (Math.abs(pa.top - pb.top) > SAME_LINE) return pa.top - pb.top;
+      return pa.left - pb.left;
     });
   }
 
@@ -577,10 +603,13 @@ export class SidebarView extends ItemView {
     const aiService = new AIService(this.plugin);
     const fullResponse: string[] = [];
 
-    // 使用自定义 Prompt，如果设置了；否则使用默认
-    const systemPrompt = this.plugin.settings.customPrompt?.trim() 
-      ? this.plugin.settings.customPrompt.trim()
-      : '你是一位专业的文献阅读助手。请根据用户提供的高亮文本，给出简明扼要的批注，包括：关键词释义、核心要点、深层含义。批注应简洁有力，适合用作阅读笔记。请用中文回答。';
+    // 系统提示词：按设置在「提示词模式」里选定的预设取用，自定义模式则用用户填的文本。
+    // 侧边栏是批注场景，需要精炼 → 追加字数约束；原文过长时上限会自动放宽。
+    const systemPrompt = resolveSystemPrompt(
+      this.plugin.settings.promptPreset,
+      this.plugin.settings.customPrompt,
+      { applyLimit: true, sourceTextLength: ann.text.length }
+    );
 
     const messages = [
       {
@@ -709,7 +738,7 @@ export class SidebarView extends ItemView {
 
       sortedPages.forEach(pageNum => {
         md += `## 第 ${pageNum} 页\n\n`;
-        grouped.get(pageNum)!.forEach(ann => {
+        this.sortAnnotations(grouped.get(pageNum)!).forEach(ann => {
           // ann.text / ann.comment 在写入存储时已 normalizeWhitespace 收敛为单行；
           // 此处再兜底 normalize 一次以兼容历史数据（避免 ==...== 跨段被切断）。
           const annText = normalizeWhitespace(ann.text);

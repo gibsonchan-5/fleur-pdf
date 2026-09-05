@@ -1,5 +1,7 @@
-import { App, PluginSettingTab, Setting, requestUrl } from 'obsidian';
+import { App, PluginSettingTab, Setting, DropdownComponent, requestUrl } from 'obsidian';
 import type FleurPDFPlugin from './main';
+import { PROMPT_PRESETS, getPromptPreset, getPresetPreview } from './ai-prompts';
+import type { PromptPresetKey } from './ai-prompts';
 
 export interface FleurSettings {
   // AI 配置
@@ -8,7 +10,8 @@ export interface FleurSettings {
   baseUrl: string;
   model: string;
   temperature: number; // AI 温度参数
-  customPrompt: string; // 自定义 AI prompt
+  promptPreset: PromptPresetKey; // AI 提示词预设模式
+  customPrompt: string; // 自定义 AI prompt（仅 promptPreset = 'custom' 时生效）
 
   // 标注默认值
   highlightColors: string[]; // 3种高亮颜色
@@ -20,6 +23,7 @@ export interface FleurSettings {
   // 侧边栏配置
   sidebarPosition: 'right' | 'left';
   sidebarDefaultOpen: boolean;
+  annotationSort: 'time' | 'position'; // 同一页内批注的排序方式
 
   // AI 面板位置持久化
   aiPanelPos?: { left: number; top: number };
@@ -31,12 +35,14 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   baseUrl: 'https://api.deepseek.com/v1',
   model: 'deepseek-chat',
   temperature: 0.7,
+  promptPreset: 'default',
   customPrompt: '',
   highlightColors: ['#D4A017', '#2979C4', '#D32F2F'], // 深金、深蓝、深红
   underlineColor: '#6B0000', // 极深红
   noteFolder: 'FleurReader',
   sidebarPosition: 'right',
   sidebarDefaultOpen: true,
+  annotationSort: 'time',
 };
 
 export class FleurSettingTab extends PluginSettingTab {
@@ -131,17 +137,74 @@ export class FleurSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    // 自定义 Prompt
+    // 提示词模式（预设选项卡）
+    //
+    // 切换模式时只重绘下方的「详情区」，不调用 this.display() 重建整个面板。
+    // 重建会销毁当前获得焦点的 <select>，浏览器在 DOM 变动后重新定位焦点，
+    // 表现为设置窗口自己滚动一下。局部重绘即可避免。
+    let dropdownComp: DropdownComponent | null = null;
+
     new Setting(containerEl)
-      .setName('自定义 AI Prompt')
-      .setDesc('自定义 AI 生成批注时的系统提示词。留空则使用默认提示词')
-      .addTextArea(text => text
-        .setPlaceholder('你是一位专业的文献阅读助手。请根据用户提供的高亮文本，给出简明扼要的批注……')
-        .setValue(this.plugin.settings.customPrompt)
-        .onChange(async (value) => {
-          this.plugin.settings.customPrompt = value;
-          await this.plugin.saveSettings();
-        }));
+      .setName('提示词模式')
+      .setDesc('选择 AI 生成批注时的角色定位。默认沿用原有的文献批注风格，可随时切换')
+      .addDropdown(dropdown => {
+        dropdownComp = dropdown;
+        PROMPT_PRESETS.forEach(p => dropdown.addOption(p.key, p.label));
+        dropdown.setValue(this.plugin.settings.promptPreset)
+          .onChange(async (value) => {
+            this.plugin.settings.promptPreset = value as PromptPresetKey;
+            await this.plugin.saveSettings();
+            renderPromptDetail();
+          });
+      });
+
+    const promptDetailEl = containerEl.createDiv();
+    promptDetailEl.addClass('fleur-setting-prompt-detail');
+
+    const renderPromptDetail = () => {
+      promptDetailEl.empty();
+      const preset = getPromptPreset(this.plugin.settings.promptPreset) ?? PROMPT_PRESETS[0];
+
+      if (this.plugin.settings.promptPreset === 'custom') {
+        new Setting(promptDetailEl)
+          .setName('自定义提示词')
+          .setDesc('留空则回落到「默认」模式')
+          .setClass('fleur-setting-block')
+          .addTextArea(text => text
+            .setPlaceholder('在此写下你自己的系统提示词。例如：你是一位……请根据用户高亮的文本……')
+            .setValue(this.plugin.settings.customPrompt)
+            .onChange(async (value) => {
+              this.plugin.settings.customPrompt = value;
+              await this.plugin.saveSettings();
+            }));
+      } else {
+        const previewSetting = new Setting(promptDetailEl)
+          .setName('当前提示词')
+          .setDesc('仅侧边栏批注受 250 字限制，正文「询问 AI」不限。');
+
+        // 用一个 wrapper 包住「提示词正文」和「附注」，让 wrapper 整体占满剩余空间，
+        // 避免附注和铅笔按钮跟预览框在 flex 容器里平级抢宽度。
+        const previewWrap = previewSetting.controlEl.createDiv();
+        previewWrap.addClass('fleur-setting-prompt-block');
+
+        const preview = previewWrap.createDiv();
+        preview.addClass('fleur-setting-prompt-preview');
+        preview.textContent = getPresetPreview(preset);
+
+        previewSetting.addExtraButton(btn => btn
+          .setIcon('pencil')
+          .setTooltip('以此为基础改为自定义')
+          .onClick(async () => {
+            this.plugin.settings.promptPreset = 'custom';
+            this.plugin.settings.customPrompt = preset.body;
+            await this.plugin.saveSettings();
+            dropdownComp?.setValue('custom');
+            renderPromptDetail();
+          }));
+      }
+    };
+
+    renderPromptDetail();
 
     // 测试连接按钮
     const testSetting = new Setting(containerEl);
@@ -295,6 +358,20 @@ export class FleurSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.sidebarDefaultOpen = value;
           await this.plugin.saveSettings();
+        }));
+
+    new Setting(containerEl)
+      .setName('同页批注排序')
+      .setDesc('同一页内多条批注的排列方式（批注始终按页码先后分页）。按行文顺序即依照文字在页面上的先后位置，从上到下、从左到右')
+      .addDropdown(dropdown => dropdown
+        .addOption('time', '按时间顺序')
+        .addOption('position', '按行文顺序')
+        .setValue(this.plugin.settings.annotationSort)
+        .onChange(async (value) => {
+          this.plugin.settings.annotationSort = value as 'time' | 'position';
+          await this.plugin.saveSettings();
+          const file = this.app.workspace.getActiveFile();
+          void this.plugin.getSidebar()?.refresh(file?.path ?? null);
         }));
   }
 }

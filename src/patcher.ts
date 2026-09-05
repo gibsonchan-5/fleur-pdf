@@ -42,6 +42,32 @@ interface SelectionSnapshot {
   pages: PageSelection[];
 }
 
+/**
+ * 计算选区起点在页面内的相对位置（归一化到 0-1，与缩放无关），供「按行文顺序」排序使用。
+ * 定位不到时返回 undefined，此时该条标注退化为按时间排序。
+ */
+function computeSelectionPos(pages: PageSelection[]): { top: number; left: number } | undefined {
+  for (const ps of pages) {
+    for (const seg of ps.segments) {
+      const node = seg.textNode;
+      if (!node.isConnected || !node.parentElement) continue;
+      const pageEl = node.parentElement.closest<HTMLElement>('.page');
+      if (!pageEl) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const r = range.getBoundingClientRect();
+      const pr = pageEl.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      if (pr.height === 0 || pr.width === 0) continue;
+      return {
+        top: (r.top - pr.top) / pr.height,
+        left: (r.left - pr.left) / pr.width,
+      };
+    }
+  }
+  return undefined;
+}
+
 // ── SVG 图标辅助（替代 innerHTML，避免审核 Error）──
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -858,7 +884,7 @@ export class PDFPatcher {
     filePath?: string | null, endPage?: number
   ): Promise<string> {
     // 先保存数据（文本锚点制：数据是源头，显示可随时重建）
-    const annId = await this.saveAnnotation(text, pageNum, color, type, undefined, undefined, filePath, endPage);
+    const annId = await this.saveAnnotation(text, pageNum, color, type, undefined, undefined, filePath, endPage, computeSelectionPos(pages));
     if (!annId) return '';
 
     const styleFn = (el: HTMLElement) => {
@@ -881,7 +907,7 @@ export class PDFPatcher {
     style: UnderlineStyle, color: string,
     filePath?: string | null, endPage?: number
   ): Promise<string> {
-    const annId = await this.saveAnnotation(text, pageNum, color, 'underline', undefined, style, filePath, endPage);
+    const annId = await this.saveAnnotation(text, pageNum, color, 'underline', undefined, style, filePath, endPage, computeSelectionPos(pages));
     if (!annId) return '';
 
     const styleFn = (el: HTMLElement) => {
@@ -904,7 +930,8 @@ export class PDFPatcher {
     text: string, pageNum: number, color: string,
     type: 'highlight' | 'comment' | 'underline',
     comment?: string, underlineStyle?: UnderlineStyle,
-    filePath?: string | null, endPage?: number
+    filePath?: string | null, endPage?: number,
+    pos?: { top: number; left: number }
   ): Promise<string> {
     const path = filePath ?? this.plugin.app.workspace.getActiveFile()?.path;
     if (!path) { new Notice('未找到当前文件'); return ''; }
@@ -918,7 +945,8 @@ export class PDFPatcher {
       color,
       comment,
       underlineStyle,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      pos,
     };
 
     await this.plugin.store.addAnnotation(path, annotation);
@@ -988,7 +1016,8 @@ export class PDFPatcher {
         text,
         color: hlColor,
         comment,
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        pos: computeSelectionPos(pages),
       };
       await this.plugin.store.addAnnotation(path, annotation);
       const annId = annotation.id;
