@@ -118,7 +118,10 @@ export default class FleurPDFPlugin extends Plugin {
 
   getSidebar(): SidebarView | null {
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_SIDEBAR)[0];
-    return leaf ? (leaf.view as SidebarView) : null;
+    const view = leaf?.view;
+    // instanceof 守卫：叶子在 view 切换/卸载间隙时 leaf.view 可能是其它对象，
+    // 直接强转会导致 file-open 等事件里 .refresh() 抛 "refresh is not a function"
+    return view instanceof SidebarView ? view : null;
   }
 
   async activateSidebar() {

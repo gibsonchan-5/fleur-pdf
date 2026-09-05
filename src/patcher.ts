@@ -151,6 +151,8 @@ export class PDFPatcher {
   private restoreTimer: number | null = null;
   private pdfViewerObserver: MutationObserver | null = null;
   private pdfResizeObserver: ResizeObserver | null = null;
+  /** 当前排队中的 restore 目标路径（防止外部事件打断重试链） */
+  private scheduledRestorePath: string | null = null;
 
   constructor(private plugin: FleurPDFPlugin) {}
 
@@ -258,13 +260,25 @@ export class PDFPatcher {
     return false;
   }
 
-  /** 延迟去抖后触发恢复（等待 PDF.js 渲染完成） */
+  /** 延迟去抖后触发恢复（等待 PDF.js 渲染完成）。
+   *  互斥规则：attempt 0 由外部事件（resize / 新页 / 切文件）发起，若已有排队中的
+   *  restore（重试链进行中），同文件时忽略不打断 —— 否则重试链永远到不了
+   *  MAX_ATTEMPTS 停止条件，控制台会无限刷屏。内部重试（attempt>0）始终覆盖旧任务。 */
   private scheduleRestore(filePath: string, attempt = 0) {
-    if (this.restoreTimer) window.clearTimeout(this.restoreTimer);
+    if (this.restoreTimer) {
+      if (attempt === 0 && this.scheduledRestorePath === filePath) {
+        return; // 外部事件不打断已排队的重试链
+      }
+      window.clearTimeout(this.restoreTimer);
+      this.restoreTimer = null;
+    }
+    this.scheduledRestorePath = filePath;
     // 指数退避：500ms → 1s → 2s → 3s → 5s
     const delays = [500, 1000, 2000, 3000, 5000];
     const delay = delays[Math.min(attempt, delays.length - 1)];
     this.restoreTimer = window.setTimeout(() => {
+      this.restoreTimer = null;
+      this.scheduledRestorePath = null;
       void this.restoreAnnotationsForFile(filePath, attempt);
     }, delay);
   }
@@ -278,6 +292,12 @@ export class PDFPatcher {
     }
     this.currentPagePath = file.path;
     this.startPdfViewerWatcher();
+    // 用户显式操作优先：清掉排队中的重试链，避免被 scheduleRestore 的互斥规则吞掉
+    if (this.restoreTimer) {
+      window.clearTimeout(this.restoreTimer);
+      this.restoreTimer = null;
+    }
+    this.scheduledRestorePath = null;
     this.scheduleRestore(file.path, 0);
     new Notice('正在重新渲染标注…');
   }
@@ -355,13 +375,12 @@ export class PDFPatcher {
           continue;
         }
 
-        // 等待 textLayer 渲染完成
-        if (attempt === 0) {
-          const ready = await this.waitForTextLayer(pageEl, 5000);
-          if (!ready) {
-            needsRetry = true;
-            continue;
-          }
+        // 等待 textLayer 渲染完成（每次 attempt 都等：首轮 5s，重试轮 1.5s——
+        // 若只首轮等待，页面晚渲染时后续 attempt 直接读到空文本，永久 0/7）
+        const ready = await this.waitForTextLayer(pageEl, attempt === 0 ? 5000 : 1500);
+        if (!ready) {
+          needsRetry = true;
+          continue;
         }
 
         const textLayer = pageEl.querySelector('.textLayer') as HTMLElement;
@@ -398,7 +417,10 @@ export class PDFPatcher {
             this.addCommentBubble(ann.comment, existingSpan as HTMLElement, firstPageEl, ann.id);
           }
         } else {
-          console.log('[FleurPDF] restore: no segments for', ann.id, 'attempt', attempt);
+          // 降噪：只在首轮打印，重试轮不刷屏
+          if (attempt === 0) {
+            console.log('[FleurPDF] restore: no segments for', ann.id, 'attempt', attempt);
+          }
           needsRetry = true;
         }
         continue;
