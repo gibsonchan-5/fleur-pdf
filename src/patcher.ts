@@ -985,12 +985,6 @@ export class PDFPatcher {
     const textarea = root.createEl('textarea');
     textarea.addClass('fleur-comment-dialog-textarea');
     textarea.placeholder = '';
-    textarea.addEventListener('focus', () => {
-      textarea.addClass('is-focused');
-    });
-    textarea.addEventListener('blur', () => {
-      textarea.removeClass('is-focused');
-    });
 
     const btnRow = root.createDiv();
     btnRow.addClass('fleur-comment-dialog-btn-row');

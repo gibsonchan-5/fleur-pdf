@@ -850,14 +850,15 @@
   line-height: 1.6;
   font-family: inherit;
   color: var(--text-normal);
-  background: var(--background-primary);
+  background-color: var(--background-primary);
   outline: none;
   box-sizing: border-box;
-  transition: border-color 0.15s ease;
-}
-
-.fleur-comment-dialog-textarea:focus {
-  border-color: var(--interactive-accent);
+  /* 不引入 border-color/background transition；focus 指示由末尾的防御块用 box-shadow 处理 */
+  /* 提升为独立合成层：输入引起的 repaint 只发生在本元素自己的 GPU 纹理上，
+     背景层保持静止（配合末尾防御块消除 IME 合成期的底色闪烁） */
+  transform: translateZ(0);
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .fleur-comment-dialog-btn-row {
@@ -1150,5 +1151,67 @@
   color: var(--text-faint);
   line-height: 1.5;
   user-select: text;
+}
+
+/* ── 核心 CSS 防御：textarea 输入底色闪烁 ──
+   根因：Obsidian 核心 app.css（obsidian.asar 内，对任意主题生效）为全局 textarea
+   定义了 :hover/:active 时 background 切换到 --background-modifier-form-field-hover，
+   并附带 transition。中文 IME 首次进入合成状态时 Chromium 的 hover 伪类会短暂抖动，
+   反复触发该背景切换 → 观感为"输入时底色闪烁"。本插件所有 textarea 统一用
+   !important 锁死，压过核心样式与任意第三方主题（如 ITS Theme）的覆盖。
+   顺序要点：focus 块放在 hover/active 块之后，保证悬停聚焦状态下 accent 光环不丢。 */
+.fleur-comment-dialog-textarea,
+.fleur-sidebar-textarea,
+.fleur-sidebar-inline-textarea,
+.fleur-ai-input {
+  background-color: var(--background-primary) !important;
+  transition: none !important;
+  -webkit-text-fill-color: var(--text-normal);
+  caret-color: var(--text-normal);
+}
+
+.fleur-comment-dialog-textarea:hover,
+.fleur-comment-dialog-textarea:active,
+.fleur-sidebar-textarea:hover,
+.fleur-sidebar-textarea:active,
+.fleur-sidebar-inline-textarea:hover,
+.fleur-sidebar-inline-textarea:active,
+.fleur-ai-input:hover,
+.fleur-ai-input:active {
+  background-color: var(--background-primary) !important;
+  border-color: var(--background-modifier-border) !important;
+  box-shadow: none !important;
+  transition: none !important;
+}
+
+.fleur-comment-dialog-textarea:focus {
+  /* focus 指示走 box-shadow：不参与 layout，不触发背景/边框过渡 */
+  background-color: var(--background-primary) !important;
+  border-color: transparent !important;
+  box-shadow: 0 0 0 2px var(--interactive-accent) !important;
+  transition: none !important;
+}
+
+.fleur-sidebar-textarea:focus,
+.fleur-sidebar-inline-textarea:focus,
+.fleur-ai-input:focus {
+  background-color: var(--background-primary) !important;
+  box-shadow: none !important;
+  transition: none !important;
+}
+
+/* 设置面板的自定义 prompt 输入框：Obsidian Setting 默认背景是 form-field（非 primary），
+   此处 hover/active 锁回 form-field 本身——观感不变，但杜绝核心 hover 规则的
+   form-field → form-field-hover 背景切换（中文输入时同样会闪） */
+.setting-item.fleur-setting-block textarea {
+  transition: none !important;
+}
+
+.setting-item.fleur-setting-block textarea:hover,
+.setting-item.fleur-setting-block textarea:active {
+  background-color: var(--background-modifier-form-field) !important;
+  border-color: var(--background-modifier-border) !important;
+  box-shadow: none !important;
+  transition: none !important;
 }
 
