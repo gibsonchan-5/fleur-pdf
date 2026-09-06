@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, DropdownComponent, requestUrl } from 'obsidian';
 import type FleurPDFPlugin from './main';
-import { PROMPT_PRESETS, getPromptPreset, getPresetPreview } from './ai-prompts';
+import { PROMPT_PRESETS, getPromptPreset, getPresetPreview, ANNOTATION_DEFAULT_BASE_LIMIT } from './ai-prompts';
 import type { PromptPresetKey } from './ai-prompts';
 
 export interface FleurSettings {
@@ -12,6 +12,7 @@ export interface FleurSettings {
   temperature: number; // AI 温度参数
   promptPreset: PromptPresetKey; // AI 提示词预设模式
   customPrompt: string; // 自定义 AI prompt（仅 promptPreset = 'custom' 时生效）
+  annotationLimit: number; // 侧边栏 AI 批注基准字数上限（正文「询问 AI」不限）
 
   // 标注默认值
   highlightColors: string[]; // 3种高亮颜色
@@ -37,6 +38,7 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   temperature: 0.7,
   promptPreset: 'default',
   customPrompt: '',
+  annotationLimit: 250,
   highlightColors: ['#D4A017', '#2979C4', '#D32F2F'], // 深金、深蓝、深红
   underlineColor: '#6B0000', // 极深红
   noteFolder: 'FleurReader',
@@ -164,6 +166,7 @@ export class FleurSettingTab extends PluginSettingTab {
     const renderPromptDetail = () => {
       promptDetailEl.empty();
       const preset = getPromptPreset(this.plugin.settings.promptPreset) ?? PROMPT_PRESETS[0];
+      const baseLimit = this.plugin.settings.annotationLimit || ANNOTATION_DEFAULT_BASE_LIMIT;
 
       if (this.plugin.settings.promptPreset === 'custom') {
         new Setting(promptDetailEl)
@@ -180,7 +183,7 @@ export class FleurSettingTab extends PluginSettingTab {
       } else {
         const previewSetting = new Setting(promptDetailEl)
           .setName('当前提示词')
-          .setDesc('仅侧边栏批注受 250 字限制，正文「询问 AI」不限。');
+          .setDesc(`仅侧边栏批注受 ${baseLimit} 字限制（原文过长自动放宽），正文「询问 AI」不限。`);
 
         // 用一个 wrapper 包住「提示词正文」和「附注」，让 wrapper 整体占满剩余空间，
         // 避免附注和铅笔按钮跟预览框在 flex 容器里平级抢宽度。
@@ -189,7 +192,7 @@ export class FleurSettingTab extends PluginSettingTab {
 
         const preview = previewWrap.createDiv();
         preview.addClass('fleur-setting-prompt-preview');
-        preview.textContent = getPresetPreview(preset);
+        preview.textContent = getPresetPreview(preset, baseLimit);
 
         previewSetting.addExtraButton(btn => btn
           .setIcon('pencil')
@@ -205,6 +208,20 @@ export class FleurSettingTab extends PluginSettingTab {
     };
 
     renderPromptDetail();
+
+    // 侧边栏 AI 批注字数上限（正文「询问 AI」不受此限制）
+    new Setting(containerEl)
+      .setName('侧边栏批注字数上限')
+      .setDesc('侧边栏「AI 生成批注」的输出基准字数。选中原文较长时上限会自动放宽；正文「询问 AI」不设字数限制')
+      .addSlider(slider => slider
+        .setLimits(100, 600, 10)
+        .setValue(this.plugin.settings.annotationLimit || ANNOTATION_DEFAULT_BASE_LIMIT)
+        .setDynamicTooltip()
+        .onChange(async (value) => {
+          this.plugin.settings.annotationLimit = value;
+          await this.plugin.saveSettings();
+          renderPromptDetail();
+        }));
 
     // 测试连接按钮
     const testSetting = new Setting(containerEl);

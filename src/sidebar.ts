@@ -608,7 +608,11 @@ export class SidebarView extends ItemView {
     const systemPrompt = resolveSystemPrompt(
       this.plugin.settings.promptPreset,
       this.plugin.settings.customPrompt,
-      { applyLimit: true, sourceTextLength: ann.text.length }
+      {
+        applyLimit: true,
+        sourceTextLength: ann.text.length,
+        baseLimit: this.plugin.settings.annotationLimit,
+      }
     );
 
     const messages = [

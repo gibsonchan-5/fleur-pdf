@@ -4,7 +4,7 @@
  * 设计要点：
  * - 预设只定义「角色定位」（body），不含字数约束。
  * - 字数约束由调用场景决定，动态追加：
- *   · 侧边栏批注 → 需要精炼，基准 250 字（原文过长时放宽）
+ *   · 侧边栏批注 → 需要精炼，基准字数默认 250（可在设置里调整，原文过长时放宽）
  *   · 右键询问AI → 对话场景，不设字数限制
  * - 用户在设置界面不选时走 default，行为与旧版一致。
  */
@@ -110,24 +110,28 @@ export function getPromptPreset(key: string): PromptPreset | undefined {
 
 // ── 字数限制 ──
 
-/** 侧边栏批注的基准字数上限 */
-export const ANNOTATION_BASE_LIMIT = 250;
-/** 原文过长时放宽到的最高上限，避免批注失控 */
-export const ANNOTATION_MAX_LIMIT = 600;
+/** 侧边栏批注的默认基准字数上限（可在设置里调整） */
+export const ANNOTATION_DEFAULT_BASE_LIMIT = 250;
+/** 原文过长时放宽到的默认最高上限，避免批注失控 */
+export const ANNOTATION_DEFAULT_MAX_LIMIT = 600;
 
 /**
  * 侧边栏批注的字数上限。
- * 原文不长时保持 250 字；一旦原文超出基准，超出部分的 80% 计入放宽额度，
- * 这样原文越长、批注可以写得越充分，但始终要求压缩，最高 600 字封顶。
- * 例：100 字 → 250；300 字 → 290；500 字 → 450；1000 字 → 600（封顶）。
+ * 原文不长时保持基准（默认 250 字）；一旦原文超出基准，超出部分的 80% 计入放宽额度，
+ * 这样原文越长、批注可以写得越充分，但始终要求压缩，最高上限封顶。
+ * 例（基准 250）：100 字 → 250；300 字 → 290；500 字 → 450；1000 字 → 600（封顶）。
  */
-export function resolveAnnotationLimit(sourceTextLength: number): number {
-  if (!sourceTextLength || sourceTextLength <= ANNOTATION_BASE_LIMIT) {
-    return ANNOTATION_BASE_LIMIT;
+export function resolveAnnotationLimit(
+  sourceTextLength: number,
+  baseLimit: number = ANNOTATION_DEFAULT_BASE_LIMIT
+): number {
+  if (!sourceTextLength || sourceTextLength <= baseLimit) {
+    return baseLimit;
   }
-  const extra = sourceTextLength - ANNOTATION_BASE_LIMIT;
-  const limit = ANNOTATION_BASE_LIMIT + Math.ceil(extra * 0.8);
-  return Math.min(limit, ANNOTATION_MAX_LIMIT);
+  const extra = sourceTextLength - baseLimit;
+  const limit = baseLimit + Math.ceil(extra * 0.8);
+  const cap = Math.max(ANNOTATION_DEFAULT_MAX_LIMIT, baseLimit * 2);
+  return Math.min(limit, cap);
 }
 
 export interface ResolveOptions {
@@ -135,6 +139,8 @@ export interface ResolveOptions {
   applyLimit?: boolean;
   /** 选中原文的长度，用于「原文过长则放宽」的例外判断 */
   sourceTextLength?: number;
+  /** 侧边栏批注基准字数上限（默认 250），与设置项 annotationLimit 联动 */
+  baseLimit?: number;
 }
 
 /** 自定义提示词里是否已经在讲字数（有就不重复追加，免得和用户的意图打架） */
@@ -173,11 +179,12 @@ export function resolveSystemPrompt(
   // 用户自己写的提示词里已经提到字数，就不再画蛇添足
   if (isCustom && USER_LIMIT_PATTERN.test(base)) return base;
 
+  const baseLimit = opts.baseLimit ?? ANNOTATION_DEFAULT_BASE_LIMIT;
   const srcLen = opts.sourceTextLength ?? 0;
-  const limit = resolveAnnotationLimit(srcLen);
+  const limit = resolveAnnotationLimit(srcLen, baseLimit);
 
   // 上限真的被放宽了才用「放宽」的措辞，否则就是常规约束
-  if (limit > ANNOTATION_BASE_LIMIT) {
+  if (limit > baseLimit) {
     return `${base}\n\n注意：本次选中的原文较长（约 ${srcLen} 字），字数限制相应放宽到 ${limit} 字以内；仍需精炼，不要逐句复述原文。`;
   }
   return `${base}\n\n要求：字数控制在 ${limit} 字以内。`;
@@ -192,7 +199,10 @@ export function resolveAskHint(presetKey: string): string {
   return preset?.askHint ?? '';
 }
 
-/** 设置界面预览：角色定位 + 侧边栏批注场景下的默认字数约束 */
-export function getPresetPreview(preset: PromptPreset): string {
-  return `${preset.body}\n\n要求：字数控制在 ${ANNOTATION_BASE_LIMIT} 字以内。`;
+/** 设置界面预览：角色定位 + 侧边栏批注场景下的基准字数约束 */
+export function getPresetPreview(
+  preset: PromptPreset,
+  baseLimit: number = ANNOTATION_DEFAULT_BASE_LIMIT
+): string {
+  return `${preset.body}\n\n要求：字数控制在 ${baseLimit} 字以内。`;
 }
