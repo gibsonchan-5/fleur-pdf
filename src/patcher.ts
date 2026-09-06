@@ -153,6 +153,9 @@ export class PDFPatcher {
   private pdfResizeObserver: ResizeObserver | null = null;
   /** 当前排队中的 restore 目标路径（防止外部事件打断重试链） */
   private scheduledRestorePath: string | null = null;
+  /** 「渲染完成」唤醒观察器：重试链给完预算后，textLayer 真正填充文本时再触发一轮恢复 */
+  private textLayerWakeObserver: MutationObserver | null = null;
+  private textLayerWakeTimer: number | null = null;
 
   constructor(private plugin: FleurPDFPlugin) {}
 
@@ -171,11 +174,15 @@ export class PDFPatcher {
     this.plugin.registerEvent(
       this.plugin.app.workspace.on('file-open', (file) => {
         if (file?.extension === 'pdf') {
+          // 切换到（或重新打开）某 PDF：清掉上一个文件的僵尸重试链，
+          // 保证本次恢复从干净的 attempt 0 开始，不被互斥规则吞掉
+          this.cancelPendingRestore();
           this.currentPagePath = file.path;
           this.scheduleRestore(file.path);
           this.startPdfViewerWatcher();
         } else {
           this.currentPagePath = null;
+          this.cancelPendingRestore();
           this.stopPdfViewerWatcher();
         }
       })
@@ -187,6 +194,7 @@ export class PDFPatcher {
         const file = (leaf?.view as any)?.file;
         if (file?.extension === 'pdf') {
           if (file.path !== this.currentPagePath) {
+            this.cancelPendingRestore();
             this.currentPagePath = file.path;
             this.startPdfViewerWatcher();
           }
@@ -213,6 +221,7 @@ export class PDFPatcher {
       this.pdfResizeObserver.disconnect();
       this.pdfResizeObserver = null;
     }
+    this.stopTextLayerWake();
   }
 
   /** 用 MutationObserver 直接监听 PDF viewer 容器内的 .page 元素变化 */
@@ -283,6 +292,68 @@ export class PDFPatcher {
     }, delay);
   }
 
+  /** 清掉排队中的 restore（关闭/切换文件时调用，避免旧文件的僵尸重试链
+   *  吞掉重新打开时的恢复请求——互斥规则会忽略同路径的 attempt 0） */
+  private cancelPendingRestore() {
+    if (this.restoreTimer) {
+      window.clearTimeout(this.restoreTimer);
+      this.restoreTimer = null;
+    }
+    this.scheduledRestorePath = null;
+    this.stopTextLayerWake();
+  }
+
+  /**
+   * 重试链给完预算仍失败时，挂一个"渲染完成"唤醒器：
+   * pdf.js 的 textLayer 是页面元素先建、文本异步填充的；若页面已存在但文本
+   * 迟迟未就绪（字体加载 / 离屏渲染慢），页面新增事件不会再触发，恢复会永久躺平。
+   * 观察 textLayer 内容变更，一旦文本真正填充 → 断开并重新触发一轮恢复。
+   * 每次渲染脉冲只触发一轮有界重试链，不会回到 v1.5.6 的无限刷屏。
+   */
+  private stopTextLayerWake() {
+    if (this.textLayerWakeTimer) {
+      window.clearTimeout(this.textLayerWakeTimer);
+      this.textLayerWakeTimer = null;
+    }
+    if (this.textLayerWakeObserver) {
+      this.textLayerWakeObserver.disconnect();
+      this.textLayerWakeObserver = null;
+    }
+  }
+
+  private armTextLayerWake(filePath: string) {
+    this.stopTextLayerWake();
+    const container = document.querySelector('.pdf-viewer, .pdf-scroll-container, .pdf-container, .pdfViewer');
+    if (!container) return;
+    const fire = () => {
+      this.stopTextLayerWake();
+      this.scheduleRestore(filePath, 0);
+    };
+    this.textLayerWakeObserver = new MutationObserver((mutations) => {
+      const textFilled = mutations.some((m) => {
+        const el = m.target as HTMLElement;
+        if (!el || el.nodeType !== Node.TEXT_NODE && !(el as HTMLElement).closest) return false;
+        const tl = (el.closest ? (el.closest('.textLayer') as HTMLElement | null) : (el.parentElement?.closest?.('.textLayer') as HTMLElement | null));
+        if (!tl) return false;
+        // 只在文本层真的有了内容（且比触发前多）时才认为渲染完成
+        const cur = (tl.textContent || '').trim().length;
+        return cur > 0 && cur > (this._wakeBaseline?.get(tl) ?? 0);
+      });
+      if (textFilled) {
+        // 去抖：渲染过程中文本层会连续更新，等稳定一拍再触发
+        if (this.textLayerWakeTimer) window.clearTimeout(this.textLayerWakeTimer);
+        this.textLayerWakeTimer = window.setTimeout(fire, 400);
+      }
+    });
+    this._wakeBaseline = new Map();
+    container.querySelectorAll('.textLayer').forEach((tl) => {
+      this._wakeBaseline!.set(tl, (tl.textContent || '').trim().length);
+      this.textLayerWakeObserver!.observe(tl, { childList: true, characterData: true, subtree: true });
+    });
+  }
+  /** textLayer 唤醒器的内容基线（避免对已有内容误触发） */
+  private _wakeBaseline: Map<Element, number> | null = null;
+
   /** 手动触发：命令「重新渲染当前 PDF 的标注」 */
   restoreNow(): void {
     const file = this.plugin.app.workspace.getActiveFile();
@@ -293,11 +364,7 @@ export class PDFPatcher {
     this.currentPagePath = file.path;
     this.startPdfViewerWatcher();
     // 用户显式操作优先：清掉排队中的重试链，避免被 scheduleRestore 的互斥规则吞掉
-    if (this.restoreTimer) {
-      window.clearTimeout(this.restoreTimer);
-      this.restoreTimer = null;
-    }
-    this.scheduledRestorePath = null;
+    this.cancelPendingRestore();
     this.scheduleRestore(file.path, 0);
     new Notice('正在重新渲染标注…');
   }
@@ -470,6 +537,12 @@ export class PDFPatcher {
 
     if (needsRetry && attempt < MAX_ATTEMPTS) {
       this.scheduleRestore(filePath, attempt + 1);
+    } else if (needsRetry) {
+      // 重试预算耗尽仍失败（多为离屏/晚渲染页面 textLayer 未就绪）：
+      // 挂上「渲染完成」唤醒器，textLayer 真正填充时再触发一轮恢复
+      this.armTextLayerWake(filePath);
+    } else {
+      this.stopTextLayerWake();
     }
   }
 
