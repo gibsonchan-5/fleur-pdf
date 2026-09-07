@@ -148,6 +148,7 @@ export class PDFPatcher {
   private boundContextMenu: ((e: MouseEvent) => void) | null = null;
   private boundMouseDown: ((e: MouseEvent) => void) | null = null;
   private boundMouseUp: ((e: MouseEvent) => void) | null = null;
+  private boundKeyDown: ((e: KeyboardEvent) => void) | null = null;
   private commentBubbles: CommentBubble[] = [];
   private lastSnapshot: SelectionSnapshot | null = null;
   /** 快照有效期：活选区被清空后，右键仍可用最近一次选区 */
@@ -163,8 +164,17 @@ export class PDFPatcher {
   /** 「渲染完成」唤醒观察器：重试链给完预算后，textLayer 真正填充文本时再触发一轮恢复 */
   private textLayerWakeObserver: MutationObserver | null = null;
   private textLayerWakeTimer: number | null = null;
+  /** 恢复代际：删除标注时 +1，使所有在途恢复（拿着删除前的旧数据）在下个检查点自行中止，
+   *  防止已被删除的高亮/划线被在途恢复重新画回原文 */
+  private restoreEpoch = 0;
 
   constructor(private plugin: FleurPDFPlugin) {}
+
+  /** 使所有在途与排队的恢复立即失效（删除标注时调用，先于任何 await） */
+  invalidateRestoreState() {
+    this.restoreEpoch++;
+    this.cancelPendingRestore();
+  }
 
   install() {
     console.log('[FleurPDF] patcher installed (text-anchored v2)');
@@ -172,24 +182,29 @@ export class PDFPatcher {
     this.boundContextMenu = (e: MouseEvent) => this.onContextMenu(e);
     this.boundMouseDown = (e: MouseEvent) => this.onMouseDown(e);
     this.boundMouseUp = (e: MouseEvent) => this.onMouseUp(e);
+    // Esc 清除检索定位高亮
+    this.boundKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this.flashSpans.length > 0) this.clearSearchFlash();
+    };
 
     document.addEventListener('contextmenu', this.boundContextMenu, true);
     document.addEventListener('mousedown', this.boundMouseDown, true);
     document.addEventListener('mouseup', this.boundMouseUp, true);
+    document.addEventListener('keydown', this.boundKeyDown, true);
 
     // 监听 file-open（文件切换时触发）
     this.plugin.registerEvent(
       this.plugin.app.workspace.on('file-open', (file) => {
         if (file?.extension === 'pdf') {
-          // 切换到（或重新打开）某 PDF：清掉上一个文件的僵尸重试链，
-          // 保证本次恢复从干净的 attempt 0 开始，不被互斥规则吞掉
-          this.cancelPendingRestore();
+          // 切换到（或重新打开）某 PDF：使在途恢复失效（含旧文件的僵尸重试链），
+          // 保证本次恢复从干净的 attempt 0 开始，且旧文件的在途恢复不会画到新文件上
+          this.invalidateRestoreState();
           this.currentPagePath = file.path;
           this.scheduleRestore(file.path);
           this.startPdfViewerWatcher();
         } else {
           this.currentPagePath = null;
-          this.cancelPendingRestore();
+          this.invalidateRestoreState();
           this.stopPdfViewerWatcher();
         }
       })
@@ -201,7 +216,7 @@ export class PDFPatcher {
         const file = (leaf?.view as any)?.file;
         if (file?.extension === 'pdf') {
           if (file.path !== this.currentPagePath) {
-            this.cancelPendingRestore();
+            this.invalidateRestoreState();
             this.currentPagePath = file.path;
             this.startPdfViewerWatcher();
           }
@@ -414,7 +429,10 @@ export class PDFPatcher {
 
   /** 为当前 PDF 文件恢复所有已保存的标注 */
   async restoreAnnotationsForFile(filePath: string, attempt = 0): Promise<void> {
+    const epoch = this.restoreEpoch;
     const data = await this.plugin.store.load(filePath);
+    // 数据加载期间发生了删除（或文件切换）：本次持有的 data 已过期，立即中止
+    if (epoch !== this.restoreEpoch) return;
     if (!data.annotations || data.annotations.length === 0) return;
 
     const MAX_ATTEMPTS = 6;
@@ -452,6 +470,8 @@ export class PDFPatcher {
         // 等待 textLayer 渲染完成（每次 attempt 都等：首轮 5s，重试轮 1.5s——
         // 若只首轮等待，页面晚渲染时后续 attempt 直接读到空文本，永久 0/7）
         const ready = await this.waitForTextLayer(pageEl, attempt === 0 ? 5000 : 1500);
+        // 等待期间发生了删除：data 已过期，绝不能再把这些标注画回去
+        if (epoch !== this.restoreEpoch) return;
         if (!ready) {
           needsRetry = true;
           continue;
@@ -1012,20 +1032,46 @@ export class PDFPatcher {
   private async removeAnnotationFromPdf(annId: string, ann?: Annotation) {
     const file = this.plugin.app.workspace.getActiveFile();
     if (!file) return;
+    // 先使在途/排队的恢复失效（同步执行，抢在任何 await 之前）：
+    // 否则删除期间正在等 textLayer 的恢复会把旧数据里的标注重新画回原文
+    this.invalidateRestoreState();
     const data = await this.plugin.store.load(file.path);
     const target = ann ?? data.annotations.find((a) => a.id === annId);
     data.annotations = data.annotations.filter((a) => a.id !== annId);
     await this.plugin.store.save(data);
     this.clearAnnotationDom(annId, target);
+    this.pruneFlashSpans();
     this.removeCommentBubble(annId);
+    // 兜底清扫：该页上凡是不属于任何剩余标注的气泡一并移除
+    // （覆盖气泡 id 与标注 id 不一致、历史气泡缺 data-ann-id 等异常情况）
+    if (target) {
+      const keepIds = new Set(data.annotations.map((a) => a.id));
+      this.sweepBubblesForPage(target.page, keepIds);
+    }
     new Notice('已清除', 2000);
     void this.plugin.getSidebar()?.refresh(file.path);
+  }
+
+  /** 清扫指定页上的孤儿气泡：id 不在保留集合中（或缺 id）的气泡全部移除 */
+  sweepBubblesForPage(pageNum: number, keepIds: Set<string>) {
+    const pageEl = this.findPageByNumber(pageNum);
+    if (!pageEl) return;
+    pageEl.querySelectorAll('.fleur-comment-bubble').forEach((el) => {
+      const bubble = el as HTMLElement;
+      const id = bubble.dataset?.['annId'];
+      if (!id || !keepIds.has(id)) {
+        bubble.remove();
+        const idx = this.commentBubbles.findIndex((b) => b.el === bubble);
+        if (idx >= 0) this.commentBubbles.splice(idx, 1);
+      }
+    });
   }
 
   /** 清除某条标注在 DOM 上的全部样式（与 sidebar.clearAnnotationStyles 对称，避免残留） */
   private clearAnnotationDom(annId: string, ann?: Annotation) {
     const clear = (el: HTMLElement) => {
-      el.removeClass('fleur-highlight', 'fleur-underline', 'fleur-underline-wavy', 'fleur-underline-solid');
+      // fleur-search-flash 也要摘（同 sidebar：先定位后删除时会残留涂色）
+      el.removeClass('fleur-highlight', 'fleur-underline', 'fleur-underline-wavy', 'fleur-underline-solid', 'fleur-search-flash');
       el.setCssStyles({ background: '', borderRadius: '', textDecoration: '', textUnderlineOffset: '' });
       el.setCssProps({ '--fleur-underline-color': '' });
       delete el.dataset['annId'];
@@ -1391,11 +1437,17 @@ export class PDFPatcher {
   }
 
   removeCommentBubble(annId: string) {
-    const idx = this.commentBubbles.findIndex(b => b.el.dataset?.['annId'] === annId);
-    if (idx >= 0) {
-      this.commentBubbles[idx].el.remove();
-      this.commentBubbles.splice(idx, 1);
+    // 移除全部同 id 气泡：页面重渲染后数组中可能残留已脱离 DOM 的旧引用，
+    // 只删第一个匹配项会把仍挂载的活气泡漏掉
+    for (let i = this.commentBubbles.length - 1; i >= 0; i--) {
+      if (this.commentBubbles[i].el.dataset?.['annId'] === annId) {
+        this.commentBubbles[i].el.remove();
+        this.commentBubbles.splice(i, 1);
+      }
     }
+    // 兜底：数组跟踪不到的气泡（历史遗留/重建后丢失记录）直接按 DOM 查删，
+    // 保证删除标注后气泡一定同步消失
+    document.querySelectorAll(`.fleur-comment-bubble[data-ann-id="${annId}"]`).forEach((el) => el.remove());
   }
 
   // ════════════════════════════════════════════
@@ -1670,6 +1722,204 @@ export class PDFPatcher {
   }
 
   // ════════════════════════════════════════════
+  //  全文检索跳转（侧边栏搜索结果点击后定位）
+  // ════════════════════════════════════════════
+
+  /** 当前检索定位高亮的 span（短暂停留后自动消失） */
+  private flashSpans: HTMLElement[] = [];
+  /** 定位高亮代际：新一轮定位/Esc 清除时 +1，旧轮的定时清除自动作废，防止误清新一轮的高亮 */
+  private flashGen = 0;
+
+  /** 从指定片段摘除 flash 样式（正式标注只摘 class，临时片段连内联一起清） */
+  private removeFlashFrom(spans: HTMLElement[]) {
+    spans.forEach((el) => {
+      el.removeClass('fleur-search-flash');
+      if (!el.dataset['annId']) {
+        el.setCssStyles({ transition: '', background: '', boxShadow: '' });
+        delete el.dataset['fleurSel'];
+      }
+    });
+  }
+
+  /** 清除检索定位高亮 */
+  clearSearchFlash() {
+    this.flashGen++;
+    this.removeFlashFrom(this.flashSpans);
+    this.flashSpans = [];
+  }
+
+  /** 删除标注清除样式后同步调用：不再携带 flash 类或已脱离 DOM 的片段移出跟踪列表 */
+  pruneFlashSpans() {
+    this.flashSpans = this.flashSpans.filter((el) => el.isConnected && el.hasClass('fleur-search-flash'));
+  }
+
+  /**
+   * 应用定位高亮。
+   * - 检索跳转（persistent=true）：常驻到下一个动作（点击其他结果/新搜索/Esc/清空）
+   * - 标注定位（persistent=false）：瞬间出现、停留约 1 秒即消失——驻留过久会让用户误以为盖住了原标注
+   */
+  private applyFlash(spans: HTMLElement[], persistent = false) {
+    const gen = ++this.flashGen;
+    this.flashSpans = spans;
+    spans.forEach((el) => {
+      if (!el.hasClass('fleur-search-flash')) el.addClass('fleur-search-flash');
+    });
+    if (persistent) return;
+    window.setTimeout(() => {
+      if (gen !== this.flashGen) return; // 已有新一轮定位/Esc 接管
+      this.removeFlashFrom(spans);
+      if (this.flashSpans === spans) this.flashSpans = [];
+    }, 1000);
+  }
+
+  /** 滚动到对应页并高亮该页内第 occurrence 处关键词（常驻到下一个动作） */
+  async revealText(pageNum: number, keyword: string, occurrence: number) {
+    const pageEl = this.findPageByNumber(pageNum);
+    if (!pageEl) {
+      new Notice(`未找到第 ${pageNum} 页`);
+      return;
+    }
+    // 先清掉上一次的定位高亮
+    this.clearSearchFlash();
+    pageEl.scrollIntoView({ block: 'start' });
+    const ready = await this.waitForTextLayer(pageEl, 8000);
+    if (!ready) {
+      new Notice('页面尚未渲染完成，请稍后重试');
+      return;
+    }
+    const textLayer = pageEl.querySelector('.textLayer') as HTMLElement | null;
+    if (!textLayer) return;
+
+    let segments = this._segmentsForOccurrence(keyword, textLayer, occurrence);
+    // 提取文本与 DOM 文本偶有差异导致计数不一致时，退化为定位该页第一处
+    if (segments.length === 0 && occurrence !== 1) {
+      segments = this._segmentsForOccurrence(keyword, textLayer, 1);
+    }
+    if (segments.length === 0) return;
+
+    const spans: HTMLElement[] = [];
+    for (const seg of segments) {
+      const span = this.wrapAndStyle(seg, (el) => el.addClass('fleur-search-flash'));
+      if (span) spans.push(span);
+    }
+    // 检索跳转：常驻到下一个动作
+    this.applyFlash(spans, true);
+  }
+
+  /** 侧边栏定位：滚动到标注所在页并高亮标注片段（常驻到下一个动作，与检索定位共用样式与清除逻辑） */
+  async revealAnnotation(ann: Annotation) {
+    this.clearSearchFlash();
+
+    const startPage = ann.page;
+    const endPage = ann.endPage || ann.page;
+    const pageEls: HTMLElement[] = [];
+    for (let p = startPage; p <= endPage; p++) {
+      const el = this.findPageByNumber(p);
+      if (el) pageEls.push(el);
+    }
+    if (pageEls.length === 0) {
+      new Notice(`未找到第 ${startPage} 页`);
+      return;
+    }
+
+    // 起始页可能未渲染（懒渲染），先滚动过去等 textLayer 就绪
+    const first = pageEls[0];
+    first.scrollIntoView({ block: 'start' });
+    const ready = await this.waitForTextLayer(first, 8000);
+    if (!ready) {
+      new Notice('页面尚未渲染完成，请稍后重试');
+      return;
+    }
+
+    // 优先复用已渲染的标注片段（恢复流程画上去的正式标注）
+    let spans: HTMLElement[] = [];
+    for (const p of pageEls) {
+      p.querySelectorAll(`[data-ann-id="${ann.id}"]`).forEach((el) => spans.push(el as HTMLElement));
+    }
+
+    // 片段不存在（页面被 pdf.js 重渲染、恢复流程尚未跑完）→ 按文本匹配临时定位，只闪不落库
+    if (spans.length === 0) {
+      const portions: Array<{ page: number; text: string }> = [];
+      if (endPage > startPage) {
+        const split = this.splitAnnotationTextByPage(ann.text, startPage, endPage);
+        for (const [page, text] of split.entries()) portions.push({ page, text });
+      } else {
+        portions.push({ page: startPage, text: ann.text });
+      }
+      for (const { page, text } of portions) {
+        const el = page === startPage ? first : this.findPageByNumber(page);
+        const tl = el?.querySelector('.textLayer') as HTMLElement | null;
+        if (!el || !tl || (tl.textContent || '').trim().length === 0) continue;
+        for (const seg of this._collectByTextMatch(text, tl)) {
+          const span = this.wrapAndStyle(seg, (s) => s.addClass('fleur-search-flash'));
+          if (span) spans.push(span);
+        }
+      }
+    }
+
+    if (spans.length === 0) {
+      new Notice('未能在原文中定位到该标注');
+      return;
+    }
+
+    // 已渲染的正式标注只叠加闪烁样式（清除时 removeFlashFrom 会区分 annId）
+    this.applyFlash(spans);
+    // 精确滚到标注处（长页时只滚到页首可能看不到目标位置）
+    spans[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+
+  /** 在页面 textLayer 中定位关键词第 occurrence 次出现的片段（大小写不敏感 + NFKC 兜底） */
+  private _segmentsForOccurrence(keyword: string, textLayer: HTMLElement, occurrence: number): TextSegment[] {
+    const kw = keyword.trim();
+    if (!kw) return [];
+
+    const nodes: { node: Text; content: string }[] = [];
+    const walker = document.createTreeWalker(textLayer, NodeFilter.SHOW_TEXT, null);
+    let n: Text | null;
+    while ((n = walker.nextNode() as Text | null)) {
+      const content = n.textContent || '';
+      if (!content.trim()) continue;
+      nodes.push({ node: n, content });
+    }
+    if (nodes.length === 0) return [];
+
+    let fullText = '';
+    const map: { node: Text; start: number; end: number }[] = [];
+    for (const { node, content } of nodes) {
+      const s = fullText.length;
+      fullText += content;
+      map.push({ node, start: s, end: fullText.length });
+    }
+
+    const findOccurrence = (haystack: string, needle: string, occ: number): number => {
+      let idx = haystack.indexOf(needle);
+      let count = 1;
+      while (idx !== -1 && count < occ) {
+        idx = haystack.indexOf(needle, idx + needle.length);
+        count++;
+      }
+      return idx;
+    };
+
+    // 策略1: 大小写不敏感精确匹配（长度不变时偏移才可靠）
+    const lowerFull = fullText.toLowerCase();
+    let idx = -1;
+    if (lowerFull.length === fullText.length) {
+      idx = findOccurrence(lowerFull, kw.toLowerCase(), occurrence);
+    }
+    // 策略2: NFKC 规范化兜底（与 _collectByTextMatch 同思路）
+    if (idx === -1) {
+      const nfkcFull = this.normalizeText(fullText).toLowerCase();
+      const nfkcKw = this.normalizeText(kw).toLowerCase();
+      if (nfkcFull.length === fullText.length) {
+        idx = findOccurrence(nfkcFull, nfkcKw, occurrence);
+      }
+    }
+    if (idx === -1) return [];
+    return this._textRangeToSegments(map, idx, idx + kw.length);
+  }
+
+  // ════════════════════════════════════════════
   //  卸载
   // ════════════════════════════════════════════
 
@@ -1691,6 +1941,10 @@ export class PDFPatcher {
     if (this.boundMouseUp) {
       document.removeEventListener('mouseup', this.boundMouseUp, true);
       this.boundMouseUp = null;
+    }
+    if (this.boundKeyDown) {
+      document.removeEventListener('keydown', this.boundKeyDown, true);
+      this.boundKeyDown = null;
     }
     this.stopPdfViewerWatcher();
     this.commentBubbles.forEach(b => b.el.remove());

@@ -3,11 +3,13 @@ import { Plugin } from 'obsidian';
 import { SidebarView, VIEW_TYPE_SIDEBAR } from './sidebar';
 import { PDFPatcher } from './patcher';
 import { AnnotationStore } from './store';
+import { PdfSearchService } from './search';
 import { FleurSettings, DEFAULT_SETTINGS, FleurSettingTab } from './settings';
 
 export default class FleurPDFPlugin extends Plugin {
   store: AnnotationStore;
   patcher: PDFPatcher;
+  search: PdfSearchService;
   settings: FleurSettings = DEFAULT_SETTINGS;
 
   async onload() {
@@ -16,6 +18,7 @@ export default class FleurPDFPlugin extends Plugin {
     this.store = new AnnotationStore(this.app, this.manifest.id);
     this.patcher = new PDFPatcher(this);
     this.patcher.install();
+    this.search = new PdfSearchService(this.app);
 
     this.registerView(VIEW_TYPE_SIDEBAR, (leaf) => {
       return new SidebarView(leaf, this);
@@ -41,6 +44,12 @@ export default class FleurPDFPlugin extends Plugin {
       id: 'diagnose-pdf',
       name: '诊断当前 PDF 结构',
       callback: () => { this.patcher.diagnose(); }
+    });
+
+    this.addCommand({
+      id: 'clear-search-flash',
+      name: '清除检索定位高亮',
+      callback: () => { this.patcher.clearSearchFlash(); }
     });
 
     this.addSettingTab(new FleurSettingTab(this.app, this));

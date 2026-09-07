@@ -6,6 +6,7 @@ import { AIService } from './ai-service';
 import { markdownToPlain } from './md-utils';
 import { normalizeWhitespace } from './text-utils';
 import { resolveSystemPrompt } from './ai-prompts';
+import type { SearchResult } from './search';
 
 export const VIEW_TYPE_SIDEBAR = 'fleur-sidebar';
 
@@ -58,6 +59,16 @@ export class SidebarView extends ItemView {
   /** 当前正在内联编辑的标注 id */
   private editingId: string | null = null;
 
+  // ── 全文检索状态 ──
+  private searchQuery = '';
+  private searchResults: SearchResult[] | null = null;
+  /** 结果所属文件路径（切换文件后旧结果作废） */
+  private searchFilePath: string | null = null;
+  private searchSeq = 0;
+  private searchTimer: number | null = null;
+  private searchStatusEl: HTMLElement | null = null;
+  private searchResultsEl: HTMLElement | null = null;
+
   constructor(leaf: WorkspaceLeaf, private plugin: FleurPDFPlugin) {
     super(leaf);
   }
@@ -86,6 +97,15 @@ export class SidebarView extends ItemView {
       this.renderEmpty();
       return;
     }
+
+    // 文件切换：检索状态与缓存一并作废（缓存被新文件的提取覆盖，这里只中断进行中的提取）
+    if (this.searchFilePath && file.path !== this.searchFilePath) {
+      this.searchQuery = '';
+      this.searchResults = null;
+      this.searchFilePath = null;
+      this.plugin.search.clearCache();
+    }
+
     this.data = await this.plugin.store.load(file.path);
     this.render();
 
@@ -130,12 +150,7 @@ export class SidebarView extends ItemView {
     c.empty();
     c.addClass('fleur-sidebar-root');
 
-    if (!this.data || this.data.annotations.length === 0) {
-      this.renderEmpty();
-      return;
-    }
-
-    // 顶栏
+    // 顶栏（即使 0 条批注也渲染——全文检索不依赖批注数据）
     const header = c.createDiv();
     header.addClass('fleur-sidebar-header');
 
@@ -145,7 +160,7 @@ export class SidebarView extends ItemView {
     const title = titleWrap.createDiv({ text: '批注' });
     title.addClass('fleur-sidebar-header-title');
 
-    const count = titleWrap.createDiv({ text: `${this.data.annotations.length}` });
+    const count = titleWrap.createDiv({ text: `${this.data?.annotations.length ?? 0}` });
     count.addClass('fleur-sidebar-header-count');
 
     // 导出笔记按钮
@@ -161,9 +176,22 @@ export class SidebarView extends ItemView {
     exportBtn.append(' 导出笔记');
     exportBtn.addEventListener('click', () => { void this.exportAllNotes(); });
 
+    // 全文检索
+    this.renderSearch(c);
+
     // 内容区
     const body = c.createDiv();
     body.addClass('fleur-sidebar-body');
+
+    if (!this.data || this.data.annotations.length === 0) {
+      // 无批注：给出空提示（检索功能仍可用）
+      const hint = body.createDiv();
+      hint.addClass('fleur-sidebar-empty');
+      const txt = hint.createDiv();
+      txt.addClass('fleur-sidebar-empty-text');
+      txt.textContent = '尚无批注，选中文本后右键开始标注';
+      return;
+    }
 
     // 按页分组
     const grouped = new Map<number, Annotation[]>();
@@ -187,6 +215,129 @@ export class SidebarView extends ItemView {
         this.renderAnnotation(section, ann);
       });
     });
+  }
+
+  // ── 全文检索 ──
+
+  private renderSearch(c: HTMLElement) {
+    const wrap = c.createDiv();
+    wrap.addClass('fleur-search-bar');
+
+    const box = wrap.createDiv();
+    box.addClass('fleur-search-box');
+    appendSvg(box, SVG_ATTRS, [
+      { tag: 'circle', attrs: { cx: '11', cy: '11', r: '8' } },
+      { tag: 'line', attrs: { x1: '21', y1: '21', x2: '16.65', y2: '16.65' } },
+    ]);
+    const input = box.createEl('input');
+    input.type = 'text';
+    input.placeholder = '检索 PDF 全文…';
+    input.value = this.searchQuery;
+    input.addEventListener('input', () => {
+      this.searchQuery = input.value;
+      if (this.searchTimer) window.clearTimeout(this.searchTimer);
+      if (!this.searchQuery.trim()) {
+        this.searchResults = null;
+        // 清空搜索 = 检索动作结束，顺带清除原文定位高亮
+        this.plugin.patcher.clearSearchFlash();
+        this.renderSearchState();
+        return;
+      }
+      this.searchTimer = window.setTimeout(() => void this.runSearch(), 300);
+    });
+
+    const status = wrap.createDiv();
+    status.addClass('fleur-search-status');
+    this.searchStatusEl = status;
+
+    const list = wrap.createDiv();
+    list.addClass('fleur-search-results');
+    this.searchResultsEl = list;
+
+    // 恢复上一次渲染时的检索状态（refresh 会重建整个 DOM）
+    this.renderSearchState();
+  }
+
+  /** 依据当前 searchQuery / searchResults 渲染状态行与结果列表 */
+  private renderSearchState() {
+    if (!this.searchStatusEl || !this.searchResultsEl) return;
+    const status = this.searchStatusEl;
+    const list = this.searchResultsEl;
+    status.empty();
+    list.empty();
+
+    if (!this.searchQuery.trim()) {
+      status.addClass('is-hidden');
+      list.addClass('is-hidden');
+      return;
+    }
+
+    status.removeClass('is-hidden');
+    list.removeClass('is-hidden');
+
+    if (this.searchResults === null) return; // 提取中，状态行已由 runSearch 更新
+
+    if (this.searchResults.length === 0) {
+      status.textContent = '无结果';
+      return;
+    }
+
+    const truncated = this.searchResults.length >= 300;
+    status.textContent = `${this.searchResults.length} 处结果${truncated ? '（已截断）' : ''}`;
+
+    for (let i = 0; i < this.searchResults.length; i++) {
+      const r = this.searchResults[i];
+      const item = list.createDiv();
+      item.addClass('fleur-search-item');
+
+      const meta = item.createDiv();
+      meta.addClass('fleur-search-item-meta');
+      // 展示用全文连续序号（结果已按行文顺序）；跳转定位仍用页内序号 r.occurrence
+      meta.textContent = `第 ${r.pageNum} 页 · 全文第 ${i + 1} 处`;
+
+      const ctx = item.createDiv();
+      ctx.addClass('fleur-search-item-context');
+      // 分段 textContent 高亮关键词，不使用 innerHTML
+      const s = Math.max(0, r.matchStart);
+      const e = Math.min(r.context.length, s + r.matchLength);
+      if (s > 0) ctx.createSpan({ text: r.context.slice(0, s) });
+      const mark = ctx.createSpan({ text: r.context.slice(s, e) });
+      mark.addClass('fleur-search-hit');
+      if (e < r.context.length) ctx.createSpan({ text: r.context.slice(e) });
+
+      item.addEventListener('click', () => {
+        this.plugin.patcher.revealText(r.pageNum, this.searchQuery.trim(), r.occurrence);
+      });
+    }
+  }
+
+  private async runSearch() {
+    const file = this.app.workspace.getActiveFile();
+    const kw = this.searchQuery.trim();
+    if (!file || file.extension !== 'pdf' || !kw) return;
+
+    // 新搜索 = 上一次的定位高亮作废
+    this.plugin.patcher.clearSearchFlash();
+    const seq = ++this.searchSeq;
+    if (this.searchStatusEl) {
+      this.searchStatusEl.removeClass('is-hidden');
+      this.searchStatusEl.textContent = '正在建立索引…';
+    }
+
+    const results = await this.plugin.search.search(file.path, kw, (done, total) => {
+      if (seq === this.searchSeq && this.searchStatusEl) {
+        this.searchStatusEl.textContent = `正在建立索引 ${done} / ${total} 页…`;
+      }
+    });
+
+    // 过期请求（用户已改关键词或已切文件）直接丢弃
+    if (seq !== this.searchSeq) return;
+    this.searchFilePath = file.path;
+    this.searchResults = results ?? [];
+    if (results === null && this.searchStatusEl) {
+      this.searchStatusEl.textContent = '无法读取 PDF 文本';
+    }
+    this.renderSearchState();
   }
 
   /**
@@ -267,6 +418,19 @@ export class SidebarView extends ItemView {
     // 操作按钮（悬停显示）
     const actions = row.createDiv();
     actions.addClass('fleur-sidebar-card-actions');
+
+    // 定位按钮：滚动到原文并高亮该标注
+    const locateBtn = actions.createEl('button');
+    locateBtn.title = '定位到原文';
+    locateBtn.addClass('fleur-sidebar-icon-btn');
+    appendSvg(locateBtn, SVG_ATTRS, [
+      { tag: 'path', attrs: { d: 'M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z' } },
+      { tag: 'circle', attrs: { cx: '12', cy: '10', r: '3' } },
+    ]);
+    locateBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void this.plugin.patcher.revealAnnotation(ann);
+    });
 
     // AI 生成批注按钮
     const aiBtn = actions.createEl('button');
@@ -686,11 +850,16 @@ export class SidebarView extends ItemView {
   private async deleteAnnotation(ann: Annotation) {
     const file = this.app.workspace.getActiveFile();
     if (!file) return;
+    // 先使在途/排队的恢复失效（同步执行，抢在任何 await 之前），
+    // 防止删除期间正在等待 textLayer 的恢复流程把已删标注画回原文
+    this.plugin.patcher?.invalidateRestoreState();
     const data = await this.plugin.store.load(file.path);
     data.annotations = data.annotations.filter(a => a.id !== ann.id);
     await this.plugin.store.save(data);
     this.clearAnnotationStyles(ann);
     this.plugin.patcher?.removeCommentBubble(ann.id);
+    // 兜底清扫：该页上不属于任何剩余标注的气泡一并移除
+    this.plugin.patcher?.sweepBubblesForPage(ann.page, new Set(data.annotations.map(a => a.id)));
     new Notice('已删除', 2000);
     await this.refresh();
   }
@@ -782,7 +951,9 @@ export class SidebarView extends ItemView {
     // 和 CSS 变量（--fleur-underline-color），只置空内联样式压不住 class 规则，
     // 会导致删除后波浪线/下划线残留到下次重渲染。
     const clear = (el: HTMLElement) => {
-      el.removeClass('fleur-highlight', 'fleur-underline', 'fleur-underline-wavy', 'fleur-underline-solid');
+      // fleur-search-flash 也要摘：定位/检索的高亮是 class 绘制的（带 !important），
+      // 「先定位后删除」时残留该 class 会让片段继续涂色（小片段表现为像素点）
+      el.removeClass('fleur-highlight', 'fleur-underline', 'fleur-underline-wavy', 'fleur-underline-solid', 'fleur-search-flash');
       el.setCssStyles({ background: '', borderRadius: '', textDecoration: '', textUnderlineOffset: '' });
       el.setCssProps({ '--fleur-underline-color': '' });
       delete el.dataset['annId'];
@@ -803,6 +974,9 @@ export class SidebarView extends ItemView {
         });
       });
     }
+
+    // 闪灼状态同步：刚被清掉样式的片段不再属于定位高亮
+    this.plugin.patcher?.pruneFlashSpans();
   }
 }
 

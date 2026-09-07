@@ -1215,3 +1215,107 @@
   transition: none !important;
 }
 
+
+/* ════════════════════════════════════════════
+   全文检索（侧边栏）
+   ════════════════════════════════════════════ */
+
+.fleur-search-bar {
+  padding: 8px 12px 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.fleur-search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+}
+
+.fleur-search-box:focus-within {
+  border-color: var(--interactive-accent);
+}
+
+.fleur-search-box svg {
+  flex-shrink: 0;
+  opacity: 0.55;
+}
+
+.fleur-search-box input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 2px 0;
+  font-size: var(--font-ui-small);
+}
+
+.fleur-search-box input:focus {
+  border: none;
+  box-shadow: none;
+}
+
+.fleur-search-status {
+  padding: 4px 2px 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.fleur-search-status.is-hidden {
+  display: none;
+}
+
+.fleur-search-results.is-hidden {
+  display: none;
+}
+
+.fleur-search-item {
+  padding: 6px 8px;
+  margin-top: 2px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.fleur-search-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.fleur-search-item-meta {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.fleur-search-item-context {
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  color: var(--text-normal);
+  word-break: break-all;
+}
+
+.fleur-search-hit {
+  background: rgba(255, 213, 79, 0.45);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+.theme-dark .fleur-search-hit {
+  background: rgba(255, 213, 79, 0.28);
+}
+
+/* 点击结果后原文处的定位高亮：常驻（到下一个动作），深橙 + 外圈描边确保一眼可见 */
+.fleur-search-flash {
+  background: rgba(255, 85, 0, 0.78) !important;
+  border-radius: 2px;
+  outline: 2px solid rgba(217, 60, 0, 0.95);
+  outline-offset: 0;
+}
+
+.theme-dark .fleur-search-flash {
+  background: rgba(255, 145, 0, 0.5) !important;
+  outline: 2px solid rgba(255, 145, 0, 0.85);
+}
