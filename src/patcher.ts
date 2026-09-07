@@ -126,6 +126,13 @@ function iconAI(c: Node) {
     { tag: 'path', attrs: { d: 'M11 18h2' } },
   ]);
 }
+function iconEraser(c: Node) {
+  return svgIcon(c, 'currentColor', [
+    { tag: 'path', attrs: { d: 'm7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21' } },
+    { tag: 'path', attrs: { d: 'M22 21H7' } },
+    { tag: 'path', attrs: { d: 'm5 11 9 9' } },
+  ]);
+}
 function iconTranslate(c: Node) {
   return svgIcon(c, 'currentColor', [
     { tag: 'path', attrs: { d: 'M5 8l6 6' } },
@@ -749,6 +756,9 @@ export class PDFPatcher {
   private onContextMenu(e: MouseEvent) {
     if (!this.isInPDFView(e.target)) return;
 
+    // 点击处命中的标注层（由内向外收集，叠加标注的嵌套子 span 各有 annId）
+    const hitAnnIds = this.collectAnnotationIdsAt(e.target);
+
     // 优先用活选区重建快照（Chromium 右键不清空选区）
     let snapshot: SelectionSnapshot | null = null;
     const selection = window.getSelection();
@@ -767,11 +777,22 @@ export class PDFPatcher {
       };
     }
 
-    if (!snapshot || !snapshot.text) return;
+    if (snapshot && snapshot.text) {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.showContextMenu(e.clientX, e.clientY, snapshot, hitAnnIds);
+      return;
+    }
 
-    e.preventDefault();
-    e.stopPropagation();
-    this.showContextMenu(e.clientX, e.clientY, snapshot);
+    // 无选区：点击处有标注 → 「一键清除」原生菜单。
+    // 只需右键点击标注区域内任意位置，无需选中整段文字。
+    // 批注气泡有自己的右键菜单（删除批注），不抢占。
+    const el = e.target as HTMLElement | null;
+    if (hitAnnIds.length > 0 && !el?.closest?.('.fleur-comment-bubble')) {
+      e.preventDefault();
+      e.stopPropagation();
+      void this.showClearAnnotationMenu(e.clientX, e.clientY, hitAnnIds);
+    }
   }
 
   /** 根据页码查找页面元素 */
@@ -784,7 +805,7 @@ export class PDFPatcher {
     return null;
   }
 
-  private showContextMenu(_x: number, _y: number, snapshot: SelectionSnapshot) {
+  private async showContextMenu(_x: number, _y: number, snapshot: SelectionSnapshot, hitAnnIds: string[] = []) {
     const s = this.plugin.settings;
     const underlineColor = s.underlineColor || '#6B0000';
     const highlightColors = s.highlightColors.length >= 3
@@ -795,6 +816,15 @@ export class PDFPatcher {
 
     // 预先捕获文件路径（菜单显示后 PDF 视图可能失去焦点）
     const filePath = this.plugin.app.workspace.getActiveFile()?.path ?? null;
+
+    // 解析点击处各标注层的类型（用于清除项的分层标签；存储缺失时退化为通用标签）
+    const hitItems: { id: string; ann?: Annotation }[] = hitAnnIds.map((id) => ({ id }));
+    if (hitAnnIds.length > 0 && filePath) {
+      const data = await this.plugin.store.load(filePath);
+      for (const item of hitItems) {
+        item.ann = data.annotations.find((a) => a.id === item.id);
+      }
+    }
 
     // 创建浮动面板
     const panel = createDiv({ cls: 'fleur-context-panel' });
@@ -888,6 +918,21 @@ export class PDFPatcher {
       panel.remove();
     });
 
+    // 清除标注（右键点击处命中标注层时显示 — 分层列出，叠加标注逐项清除）
+    if (hitItems.length > 0) {
+      panel.createDiv({ cls: 'fleur-context-sep' });
+      for (const item of hitItems) {
+        const clearBtn = panel.createEl('button');
+        clearBtn.addClass('fleur-context-item');
+        clearBtn.title = this.describeAnnotation(item.ann);
+        iconEraser(clearBtn);
+        clearBtn.addEventListener('click', () => {
+          panel.remove();
+          void this.removeAnnotationFromPdf(item.id, item.ann);
+        });
+      }
+    }
+
     // 点击外部关闭面板
     const closeHandler = (e: MouseEvent) => {
       if (!panel.contains(e.target as Node)) {
@@ -918,6 +963,87 @@ export class PDFPatcher {
     if (posY < 8) posY = 8;
 
     panel.setCssStyles({ left: `${posX}px`, top: `${posY}px` });
+  }
+
+  // ════════════════════════════════════════════
+  //  右键一键清除标注 — 点击标注区域内任意位置即可，无需选中
+  // ════════════════════════════════════════════
+
+  /** 收集右键点击处（由内向外）所有标注层的 id。叠加标注以嵌套子 span 形式存在，每层各有 annId */
+  private collectAnnotationIdsAt(target: EventTarget | null): string[] {
+    const el = target as HTMLElement | null;
+    if (!el?.closest) return [];
+    const pageEl = el.closest('.page');
+    const ids: string[] = [];
+    let cur: HTMLElement | null = el;
+    while (cur && cur !== pageEl) {
+      const id = cur.dataset?.['annId'];
+      if (id && !ids.includes(id)) ids.push(id);
+      cur = cur.parentElement;
+    }
+    return ids;
+  }
+
+  /** 无选区右键命中标注 → 原生菜单分层列出清除项（与批注气泡右键菜单风格一致） */
+  private async showClearAnnotationMenu(x: number, y: number, annIds: string[]) {
+    const file = this.plugin.app.workspace.getActiveFile();
+    const data = file ? await this.plugin.store.load(file.path) : null;
+    const menu = new Menu();
+    for (const id of annIds) {
+      const ann = data?.annotations.find((a) => a.id === id);
+      menu.addItem((item) => {
+        item.setTitle(this.describeAnnotation(ann)).setIcon('eraser');
+        item.onClick(() => void this.removeAnnotationFromPdf(id, ann));
+      });
+    }
+    menu.showAtPosition({ x, y });
+  }
+
+  /** 清除项标签：按标注类型给出具体名称 */
+  private describeAnnotation(ann?: Annotation): string {
+    if (!ann) return '清除标注';
+    if (ann.type === 'highlight') return '清除高亮';
+    if (ann.type === 'underline') return ann.underlineStyle === 'wavy' ? '清除波浪线' : '清除直线';
+    if (ann.type === 'comment') return '清除批注';
+    return '清除标注';
+  }
+
+  /** 从存储与 DOM 中移除一条标注（含跨页全部片段、批注气泡），并刷新侧边栏 */
+  private async removeAnnotationFromPdf(annId: string, ann?: Annotation) {
+    const file = this.plugin.app.workspace.getActiveFile();
+    if (!file) return;
+    const data = await this.plugin.store.load(file.path);
+    const target = ann ?? data.annotations.find((a) => a.id === annId);
+    data.annotations = data.annotations.filter((a) => a.id !== annId);
+    await this.plugin.store.save(data);
+    this.clearAnnotationDom(annId, target);
+    this.removeCommentBubble(annId);
+    new Notice('已清除', 2000);
+    void this.plugin.getSidebar()?.refresh(file.path);
+  }
+
+  /** 清除某条标注在 DOM 上的全部样式（与 sidebar.clearAnnotationStyles 对称，避免残留） */
+  private clearAnnotationDom(annId: string, ann?: Annotation) {
+    const clear = (el: HTMLElement) => {
+      el.removeClass('fleur-highlight', 'fleur-underline', 'fleur-underline-wavy', 'fleur-underline-solid');
+      el.setCssStyles({ background: '', borderRadius: '', textDecoration: '', textUnderlineOffset: '' });
+      el.setCssProps({ '--fleur-underline-color': '' });
+      delete el.dataset['annId'];
+    };
+
+    const matched = document.querySelectorAll(`[data-ann-id="${annId}"]`);
+    matched.forEach((span) => clear(span as HTMLElement));
+
+    if (matched.length === 0 && ann) {
+      const pages = document.querySelectorAll(`.page[data-page-number="${ann.page}"]`);
+      pages.forEach((page) => {
+        const textLayer = page.querySelector('.textLayer');
+        if (!textLayer) return;
+        textLayer.querySelectorAll('span').forEach((span) => {
+          if (span.textContent?.trim() === ann.text.trim()) clear(span as HTMLElement);
+        });
+      });
+    }
   }
 
   // ════════════════════════════════════════════

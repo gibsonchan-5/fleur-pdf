@@ -778,12 +778,18 @@ export class SidebarView extends ItemView {
   // ── 清除样式 ──
 
   private clearAnnotationStyles(ann: Annotation) {
-    const matched = document.querySelectorAll(`[data-ann-id="${ann.id}"]`);
-    matched.forEach((span) => {
-      const el = span as HTMLElement;
+    // 清除必须与渲染对称：渲染端除了内联样式还加了 class（fleur-underline-wavy 等）
+    // 和 CSS 变量（--fleur-underline-color），只置空内联样式压不住 class 规则，
+    // 会导致删除后波浪线/下划线残留到下次重渲染。
+    const clear = (el: HTMLElement) => {
+      el.removeClass('fleur-highlight', 'fleur-underline', 'fleur-underline-wavy', 'fleur-underline-solid');
       el.setCssStyles({ background: '', borderRadius: '', textDecoration: '', textUnderlineOffset: '' });
+      el.setCssProps({ '--fleur-underline-color': '' });
       delete el.dataset['annId'];
-    });
+    };
+
+    const matched = document.querySelectorAll(`[data-ann-id="${ann.id}"]`);
+    matched.forEach((span) => clear(span as HTMLElement));
 
     if (matched.length === 0) {
       const pages = document.querySelectorAll(`.page[data-page-number="${ann.page}"]`);
@@ -792,8 +798,7 @@ export class SidebarView extends ItemView {
         if (!textLayer) return;
         textLayer.querySelectorAll('span').forEach(span => {
           if (span.textContent?.trim() === ann.text.trim()) {
-            const el = span as HTMLElement;
-            el.setCssStyles({ background: '', borderRadius: '', textDecoration: '', textUnderlineOffset: '' });
+            clear(span as HTMLElement);
           }
         });
       });
