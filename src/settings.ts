@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting, DropdownComponent, Notice, requestUrl }
 import type FleurPDFPlugin from './main';
 import { PROMPT_PRESETS, getPromptPreset, getPresetPreview, ANNOTATION_DEFAULT_BASE_LIMIT } from './ai-prompts';
 import type { PromptPresetKey } from './ai-prompts';
+import { resolveChatEndpoint } from './ai-transport';
 
 export interface FleurSettings {
   // AI 配置
@@ -287,29 +288,41 @@ export class FleurSettingTab extends PluginSettingTab {
           btn.setDisabled(true);
           try {
             const { baseUrl, apiKey, model } = this.plugin.settings;
-            const response = await requestUrl({
-              url: `${baseUrl}/chat/completions`,
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-              },
-              body: JSON.stringify({
-                model,
-                messages: [{ role: 'user', content: 'hi' }],
-                max_tokens: 5,
-              }),
-            });
-            if (response.status >= 200 && response.status < 300) {
-              btn.setButtonText('✓ 连接成功');
-              btn.buttonEl.addClass('fleur-setting-test-success');
-            } else {
-              btn.setButtonText(`✗ 失败 (${response.status})`);
+            const endpoint = resolveChatEndpoint(baseUrl);
+            if (!endpoint) {
+              btn.setButtonText('✗ 请先填写 Base URL');
               btn.buttonEl.addClass('fleur-setting-test-error');
+            } else {
+              const response = await requestUrl({
+                url: endpoint,
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                  model,
+                  messages: [{ role: 'user', content: 'hi' }],
+                  max_tokens: 5,
+                }),
+                // 让 4xx/5xx 走下面的状态码分支，而不是一律被 catch 成「网络错误」。
+                // 401 密钥错、403 无权限或地区不支持、404 路径或模型名错、429 限流都要能分辨出来。
+                throw: false,
+              });
+              if (response.status >= 200 && response.status < 300) {
+                btn.setButtonText('✓ 连接成功');
+                btn.buttonEl.addClass('fleur-setting-test-success');
+              } else {
+                btn.setButtonText(`✗ 失败 (${response.status})`);
+                btn.buttonEl.addClass('fleur-setting-test-error');
+                new Notice(`FleurPDF：连接被拒绝 (${response.status})\n${response.text.slice(0, 200)}`);
+              }
             }
-          } catch (_e) {
-            btn.setButtonText('✗ 网络错误');
+          } catch (e) {
+            // 只有真的没连上（DNS、超时、TLS、代理不通）才归类为网络错误
+            btn.setButtonText('✗ 无法连接');
             btn.buttonEl.addClass('fleur-setting-test-error');
+            new Notice(`FleurPDF：无法连接，请检查网络、代理与 Base URL\n${e instanceof Error ? e.message : String(e)}`);
           }
           window.setTimeout(() => {
             btn.setButtonText('测试');
