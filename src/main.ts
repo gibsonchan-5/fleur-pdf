@@ -126,13 +126,35 @@ export default class FleurPDFPlugin extends Plugin {
   async loadSettings() {
     const saved = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
-    // 迁移：早期版本只有单一的「自定义 Prompt」文本框。已填写过内容的用户
-    // 升级后自动落到「自定义」模式，避免他们写好的提示词被预设静默覆盖。
-    if (
-      saved && !('promptPreset' in saved) &&
-      typeof saved.customPrompt === 'string' && saved.customPrompt.trim()
-    ) {
-      this.settings.promptPreset = 'custom';
+    // 迁移：早期版本只有单一的「自定义 Prompt」文本框（customPrompt: string），
+    // 现已改为三个自定义槽（customPrompts: string[]，对应 custom-1/2/3）。
+    // 把旧文本落进 1 号槽，并沿用旧版行为——写过自定义提示词的用户自动切到「自定义 1」，
+    // 避免他们写好的内容被预设静默覆盖。
+    const legacyCustomPrompt = (this.settings as unknown as Record<string, unknown>).customPrompt;
+    const hasLegacyKey = typeof legacyCustomPrompt === 'string';
+    if (hasLegacyKey && legacyCustomPrompt.trim()) {
+      if (!Array.isArray(this.settings.customPrompts)) {
+        this.settings.customPrompts = ['', '', ''];
+      }
+      if (!(this.settings.customPrompts[0] ?? '').trim()) {
+        this.settings.customPrompts[0] = legacyCustomPrompt;
+      }
+      if (!saved || !('promptPreset' in saved)) {
+        this.settings.promptPreset = 'custom-1';
+      }
+    }
+    // 旧键（无论有没有内容）都不再需要，留着只会在 data.json 里堆积死字段
+    if (hasLegacyKey) {
+      delete (this.settings as unknown as Record<string, unknown>).customPrompt;
+    }
+    // 防止共享 DEFAULT_SETTINGS 的数组引用，并补齐长度
+    const customArr: string[] = Array.isArray(this.settings.customPrompts)
+      ? this.settings.customPrompts
+      : ['', '', ''];
+    this.settings.customPrompts = [customArr[0] ?? '', customArr[1] ?? '', customArr[2] ?? ''];
+    // 兼容更旧的 'custom' 模式键 → custom-1
+    if ((this.settings.promptPreset as string) === 'custom') {
+      this.settings.promptPreset = 'custom-1';
     }
 
     // API Key 存入系统钥匙串；磁盘上若还留有明文，在这里迁走并清掉。

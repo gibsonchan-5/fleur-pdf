@@ -771,7 +771,7 @@ export class SidebarView extends ItemView {
     // 侧边栏是批注场景，需要精炼 → 追加字数约束；原文过长时上限会自动放宽。
     const systemPrompt = resolveSystemPrompt(
       this.plugin.settings.promptPreset,
-      this.plugin.settings.customPrompt,
+      this.plugin.settings.customPrompts,
       {
         applyLimit: true,
         sourceTextLength: ann.text.length,

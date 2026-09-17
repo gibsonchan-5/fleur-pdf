@@ -1,11 +1,12 @@
 /**
- * AI 提示词预设
+ * AI 提示词预设（与 FleurEPUB / FleurAnnotation 同一套体系）
  *
  * 设计要点：
  * - 预设只定义「角色定位」（body），不含字数约束。
  * - 字数约束由调用场景决定，动态追加：
  *   · 侧边栏批注 → 需要精炼，基准字数默认 250（可在设置里调整，原文过长时放宽）
  *   · 右键询问AI → 对话场景，不设字数限制
+ * - 内置 7 个预设 + 3 个用户自定义槽（custom-1/2/3），可在设置界面切换。
  * - 用户在设置界面不选时走 default，行为与旧版一致。
  */
 
@@ -15,7 +16,11 @@ export type PromptPresetKey =
   | 'academic'
   | 'english'
   | 'classical'
-  | 'custom';
+  | 'science'
+  | 'humanities'
+  | 'custom-1'
+  | 'custom-2'
+  | 'custom-3';
 
 export interface PromptPreset {
   key: PromptPresetKey;
@@ -26,7 +31,7 @@ export interface PromptPreset {
   body: string;
   /**
    * 「询问AI」场景下追加在用户消息末尾的引导语，
-   * 让对话入口也能体现该模式的侧重点；custom 为空表示不做引导。
+   * 让对话入口也能体现该模式的侧重点；自定义槽为空表示不做引导。
    */
   askHint: string;
 }
@@ -62,7 +67,7 @@ export const PROMPT_PRESETS: PromptPreset[] = [
       '1. 判定它在全文论证中的角色——是研究问题、研究方法、数据来源、实证结果、结论主张、研究局限，还是与既有文献的对话；',
       '2. 概括其核心论点；若涉及关键概念或理论构念，点出它的操作化定义与度量方式；',
       '3. 给出一两句简短的方法论评价或可追问之处，例如样本代表性、因果识别策略、内生性处理、变量度量误差、与同类文献的分歧。',
-      '要求：术语保留学科惯用写法，除非必要不做通俗化改写；明确区分"作者主张"与"你的评价"。请用中文回答。',
+      '要求：术语保留学科惯用写法，除非必要不做通俗化改写；明确区分“作者主张”与“你的评价”。请用中文回答。',
     ].join('\n'),
     askHint: '请说明这段内容在全文论证中扮演的角色，并指出值得追问之处。',
   },
@@ -95,13 +100,70 @@ export const PROMPT_PRESETS: PromptPreset[] = [
     askHint: '请串讲这段文言，并解释关键字词与其中涉及的典故、制度。',
   },
   {
-    key: 'custom',
-    label: '自定义',
-    desc: '使用下方文本框里你自己写的提示词',
+    key: 'science',
+    label: '理科阅读助手',
+    desc: '数理化生等自然科学：概念、公式与原理拆解',
+    body: [
+      '你是一位数理化生等自然科学的阅读助手，覆盖数学、物理、化学、生物学、天文学、地球科学等全部自然科学领域。请针对用户选中的文本：',
+      '1. 先判断内容类型——是概念定义、定理或定律、公式或推导、实验方法，还是数据与结论；',
+      '2. 若是概念：先用直观的类比和直觉讲清它“是什么”，再补上严谨的学科定义；',
+      '3. 若是公式或定理：逐个说明符号的含义与适用条件，讲清推导思路与关键前提，并点出常见的理解误区或边界条件；',
+      '4. 若是实验或数据结论：说清方法要点、结论依据与局限；',
+      '5. 若选中内容与自然科学无关或只是普通叙述，就提炼事实要点，不要强行套用理科讲解。',
+      '要求：用中文回答；专业术语、符号与公式保留原文写法；解释务必准确，不确定的地方如实说明，不臆造推导或结论。',
+    ].join('\n'),
+    askHint: '请从数理化生等自然科学的角度讲解这段内容：涉及的概念、公式或原理，讲清它的来龙去脉与适用边界。',
+  },
+  {
+    key: 'humanities',
+    label: '文科阅读助手',
+    desc: '文史哲等人文社科：概念、脉络与学派立场',
+    body: [
+      '你是一位文史哲等人文社科的阅读助手，覆盖文学、历史、哲学、政治学、经济学、法学、社会学、教育学、心理学、新闻传播学、管理学、艺术学等人文与社会科学全部学科。请针对用户选中的文本：',
+      '1. 先判断文本类型——是经典原文、史料记载、学术论断、文艺作品，还是对某种现象或思潮的分析；',
+      '2. 若是概念、术语或学派主张：说清它的学科内涵、代表人物与主张要点，并提示常见的误读或争议；',
+      '3. 若是人物、事件、作品或思想脉络：交代背景、来龙去脉与关键影响，注意区分事实陈述与价值判断；',
+      '4. 若是观点或论证：点明其立场、论证逻辑与适用边界，可提示相反的视角供延伸思考，但不代替读者下结论；',
+      '5. 若选中内容与人文社科无关或只是普通叙述，就提炼事实要点，不要强行套用学科分析。',
+      '要求：用中文回答；保留原文的专名与术语写法；涉及史实与观点时务必准确审慎，不作无依据的发挥。',
+    ].join('\n'),
+    askHint: '请从文史哲等人文社科的角度讲解这段内容：概念内涵、背景脉络与值得延伸思考的视角。',
+  },
+  {
+    key: 'custom-1',
+    label: '自定义 1',
+    desc: '使用「自定义提示词 1」文本框里你自己写的内容',
+    body: '',
+    askHint: '',
+  },
+  {
+    key: 'custom-2',
+    label: '自定义 2',
+    desc: '使用「自定义提示词 2」文本框里你自己写的内容',
+    body: '',
+    askHint: '',
+  },
+  {
+    key: 'custom-3',
+    label: '自定义 3',
+    desc: '使用「自定义提示词 3」文本框里你自己写的内容',
     body: '',
     askHint: '',
   },
 ];
+
+/** 是否自定义槽位 */
+export function isCustomPresetKey(key: string): boolean {
+  return key === 'custom-1' || key === 'custom-2' || key === 'custom-3';
+}
+
+/** 自定义槽序号（1-based）；非自定义返回 0 */
+export function getCustomSlot(key: string): number {
+  if (key === 'custom-1') return 1;
+  if (key === 'custom-2') return 2;
+  if (key === 'custom-3') return 3;
+  return 0;
+}
 
 /** 按 key 取预设；key 无效时返回 undefined */
 export function getPromptPreset(key: string): PromptPreset | undefined {
@@ -149,21 +211,25 @@ const USER_LIMIT_PATTERN = /\d+\s*字/;
 /**
  * 解析出本次请求真正要用的系统提示词。
  *
- * @param presetKey    设置里选的模式
- * @param customPrompt 自定义模式下的用户文本
- * @param opts         applyLimit=true 时按场景追加字数约束
+ * @param presetKey     设置里选的模式
+ * @param customPrompts 自定义模式下的用户文本：三个自定义槽的数组，或单个字符串（兼容旧数据）
+ * @param opts          applyLimit=true 时按场景追加字数约束
  */
 export function resolveSystemPrompt(
   presetKey: string,
-  customPrompt: string,
+  customPrompts: string[] | string,
   opts: ResolveOptions = {}
 ): string {
   const preset = getPromptPreset(presetKey);
+  const customs: string[] = Array.isArray(customPrompts)
+    ? customPrompts
+    : [customPrompts ?? '', '', ''];
   let base: string;
   let isCustom = false;
 
-  if (preset?.key === 'custom') {
-    const trimmed = customPrompt?.trim();
+  if (preset && isCustomPresetKey(preset.key)) {
+    const idx = getCustomSlot(preset.key) - 1;
+    const trimmed = (customs[idx] ?? '').trim();
     if (trimmed) {
       base = trimmed;
       isCustom = true;

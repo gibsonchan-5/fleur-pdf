@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting, DropdownComponent, Notice, requestUrl } from 'obsidian';
 import type FleurPDFPlugin from './main';
-import { PROMPT_PRESETS, getPromptPreset, getPresetPreview, ANNOTATION_DEFAULT_BASE_LIMIT } from './ai-prompts';
+import { PROMPT_PRESETS, getPromptPreset, getPresetPreview, isCustomPresetKey, ANNOTATION_DEFAULT_BASE_LIMIT } from './ai-prompts';
 import type { PromptPresetKey } from './ai-prompts';
 import { resolveChatEndpoint } from './ai-transport';
 
@@ -14,7 +14,7 @@ export interface FleurSettings {
   model: string;
   temperature: number; // AI 温度参数
   promptPreset: PromptPresetKey; // AI 提示词预设模式
-  customPrompt: string; // 自定义 AI prompt（仅 promptPreset = 'custom' 时生效）
+  customPrompts: string[]; // 三个自定义提示词模版（promptPreset = custom-1/2/3 时对应生效）
   annotationLimit: number; // 侧边栏 AI 批注基准字数上限（正文「询问 AI」不限）
 
   // 标注默认值
@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   model: 'deepseek-chat',
   temperature: 0.7,
   promptPreset: 'default',
-  customPrompt: '',
+  customPrompts: ['', '', ''],
   annotationLimit: 250,
   highlightColors: ['#D4A017', '#2979C4', '#D32F2F'], // 深金、深蓝、深红
   underlineColor: '#6B0000', // 极深红
@@ -221,18 +221,31 @@ export class FleurSettingTab extends PluginSettingTab {
       const preset = getPromptPreset(this.plugin.settings.promptPreset) ?? PROMPT_PRESETS[0];
       const baseLimit = this.plugin.settings.annotationLimit || ANNOTATION_DEFAULT_BASE_LIMIT;
 
-      if (this.plugin.settings.promptPreset === 'custom') {
-        new Setting(promptDetailEl)
-          .setName('自定义提示词')
-          .setDesc('留空则回落到「默认」模式')
-          .setClass('fleur-setting-block')
-          .addTextArea(text => text
-            .setPlaceholder('在此写下你自己的系统提示词。例如：你是一位……请根据用户高亮的文本……')
-            .setValue(this.plugin.settings.customPrompt)
-            .onChange(async (value) => {
-              this.plugin.settings.customPrompt = value;
-              await this.plugin.saveSettings();
-            }));
+      if (isCustomPresetKey(this.plugin.settings.promptPreset)) {
+        // 三个自定义槽位（与 FleurEPUB / FleurAnnotation 对齐）：当前选中的槽位加高亮提示
+        const activeSlot = this.plugin.settings.promptPreset === 'custom-1' ? 1
+          : this.plugin.settings.promptPreset === 'custom-2' ? 2 : 3;
+        for (let i = 1; i <= 3; i++) {
+          new Setting(promptDetailEl)
+            .setName(`自定义提示词 ${i}${i === activeSlot ? '（当前使用）' : ''}`)
+            .setDesc(i === 1 ? '留空则回落到「默认」模式' : '')
+            .setClass('fleur-setting-block')
+            .addTextArea(text => {
+              text
+                .setPlaceholder('在此写下你自己的系统提示词。例如：你是一位……请根据用户高亮的文本……')
+                .setValue(this.plugin.settings.customPrompts?.[i - 1] ?? '')
+                .onChange(async (value) => {
+                  const idx = i - 1;
+                  if (!Array.isArray(this.plugin.settings.customPrompts)) {
+                    this.plugin.settings.customPrompts = ['', '', ''];
+                  }
+                  this.plugin.settings.customPrompts[idx] = value;
+                  await this.plugin.saveSettings();
+                });
+              // 覆盖 CSS 里 170px 的默认高度：非当前槽位压到 90px，避免三个框把设置页撑得太长
+              text.inputEl.setCssStyles({ width: '100%', minHeight: i === activeSlot ? '170px' : '90px' });
+            });
+        }
       } else {
         const previewSetting = new Setting(promptDetailEl)
           .setName('当前提示词')
@@ -249,12 +262,15 @@ export class FleurSettingTab extends PluginSettingTab {
 
         previewSetting.addExtraButton(btn => btn
           .setIcon('pencil')
-          .setTooltip('以此为基础改为自定义')
+          .setTooltip('以此为基础改为自定义 1')
           .onClick(async () => {
-            this.plugin.settings.promptPreset = 'custom';
-            this.plugin.settings.customPrompt = preset.body;
+            this.plugin.settings.promptPreset = 'custom-1';
+            if (!Array.isArray(this.plugin.settings.customPrompts)) {
+              this.plugin.settings.customPrompts = ['', '', ''];
+            }
+            this.plugin.settings.customPrompts[0] = preset.body;
             await this.plugin.saveSettings();
-            dropdownComp?.setValue('custom');
+            dropdownComp?.setValue('custom-1');
             renderPromptDetail();
           }));
       }
@@ -390,16 +406,11 @@ export class FleurSettingTab extends PluginSettingTab {
     // 扫描 vault 中的所有文件夹供选择
     const folderSet = new Set<string>();
     folderSet.add(''); // 根目录选项
-    this.app.vault.getAllLoadedFiles().forEach(file => {
-      if (file.path.includes('/')) {
-        const parts = file.path.split('/');
-        let current = '';
-        for (let i = 0; i < parts.length - 1; i++) {
-          current = current ? `${current}/${parts[i]}` : parts[i];
-          folderSet.add(current);
-        }
-      }
-    });
+    // 直接枚举 vault 里的文件夹（含空文件夹）。不要用 getAllLoadedFiles 反推祖先目录，
+    // 那样空文件夹永远不会出现在下拉里。getAllFolders() @since 1.6.6，默认不含根目录。
+    for (const folder of this.app.vault.getAllFolders()) {
+      folderSet.add(folder.path);
+    }
     const folders = Array.from(folderSet).sort();
 
     new Setting(containerEl)

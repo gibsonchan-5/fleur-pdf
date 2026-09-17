@@ -319,7 +319,7 @@ export class AIChatPanel {
       // 解释模式：跟随设置里选的「提示词模式」，但作为对话场景不设字数限制
       systemPrompt = resolveSystemPrompt(
         this.plugin.settings.promptPreset,
-        this.plugin.settings.customPrompt
+        this.plugin.settings.customPrompts
       );
       systemPrompt += '回答时使用 Markdown 格式，标题用 ## 或 ###，重点加粗。';
       const hint = resolveAskHint(this.plugin.settings.promptPreset);
