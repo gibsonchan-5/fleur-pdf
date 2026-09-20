@@ -449,7 +449,8 @@ export class InkOverlayEngine {
 			try {
 				const sel = `[data-annotation-id="${CSS.escape(id)}"]`;
 				root.querySelectorAll<HTMLElement>(sel).forEach((el) => {
-					el.style.display = 'none';
+					// 隐藏 pdf.js 原生笔迹：走 setCssStyles（审核规则禁 el.style 直赋值）
+					el.setCssStyles({ display: 'none' });
 				});
 			} catch {
 				/* 单个 id 的转义/查询失败不影响其余 */
