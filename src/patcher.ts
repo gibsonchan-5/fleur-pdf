@@ -6,12 +6,13 @@
 //   2. 每页内：DOM 交集遍历定位 segments；失败则降级为文本匹配
 //   3. 应用时 segments 若已失效（节点被 PDF.js 重渲染），按页内文本重新匹配
 //   4. 恢复时：跨页标注先按页切分文本，再逐页匹配
-import { Menu, Modal, Notice } from 'obsidian';
+import { Menu, Modal, Notice, setIcon } from 'obsidian';
 import type FleurPDFPlugin from './main';
 import type { Annotation } from './types';
 import { AIChatPanel } from './ai-chat-modal';
 import { markdownToPlain } from './md-utils';
 import { normalizeWhitespace } from './text-utils';
+import { isMobileUI } from './platform';
 
 type UnderlineStyle = 'solid' | 'wavy';
 
@@ -101,10 +102,21 @@ function iconCopy(c: Node) {
     { tag: 'path', attrs: { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' } },
   ]);
 }
+/** 是否处于移动端 UI（真机移动端，或桌面开启了「预览移动端形态」）。
+ *  图标 / 面板 DOM 的移动端专属差异一律以此门控，保证桌面端与 1.5.15 逐字节同构。 */
+function isMobileBody(): boolean {
+  return document.body.classList.contains('fleur-pdf-mobile');
+}
+/** 划线图标：描边用「用户的划线颜色」。该颜色是为与画到正文上的线保持一致而设的
+ *  （默认 #6B0000 深红），但在深色主题下会融进背景，看上去像「图标没显示」——
+ *  加一个 class 让 CSS 补浅色衬底，保住颜色语义的同时确保任何主题下都看得见。
+ *  ⚠️ 仅移动端加类：桌面端保持 1.5.15 的原始渲染。 */
 function iconUnderlineSolid(c: Node, color: string) {
-  return svgIcon(c, color, [
+  const svg = svgIcon(c, color, [
     { tag: 'line', attrs: { x1: '3', y1: '18', x2: '21', y2: '18' } },
   ]);
+  if (isMobileBody()) svg.classList.add('fleur-context-ul');
+  return svg;
 }
 function iconUnderlineWavy(c: Node, color: string) {
   return svgIcon(c, color, [
@@ -149,6 +161,52 @@ export class PDFPatcher {
   private boundMouseDown: ((e: MouseEvent) => void) | null = null;
   private boundMouseUp: ((e: MouseEvent) => void) | null = null;
   private boundKeyDown: ((e: KeyboardEvent) => void) | null = null;
+  /** 移动端：选中文字后自动唤出批注菜单（桌面端走右键，不挂这些监听）。 */
+  private boundSelectionChange: (() => void) | null = null;
+  private selectionMenuTimer: number | null = null;
+  /** 移动端：点按已有标注（无选区）→ 弹清除菜单。 */
+  private boundAnnotationTap: ((e: MouseEvent) => void) | null = null;
+  /**
+   * 选区静置多久才算「选完了」。
+   *
+   * ⚠️ 0.5 起**照搬 FleurEPUB 的 300ms**，不再自创参数。
+   *
+   * 0.4.4 走过一条弯路：900ms 去抖 + 「手势静默期」(touchSelecting) + 「选区一变
+   * 就先收掉面板」三道叠加。真机反而更差 —— 拖动过程中面板被反复收放、闪烁，
+   * 观感就是「菜单乱弹、没选完就弹」。而且「手势静默期」在 Android WebView 上
+   * 根本是无效复杂度：拖原生选择手柄时页面收不到 touch 事件，那些标志位全程为假。
+   *
+   * FleurEPUB 那套（用户真机验证过的手感）只有两条规则，本类现在与它一字不差：
+   *   ① 每次 selectionchange 都重置去抖计时器 ⇒ 只有**停手** 300ms 才判定，
+   *      拖动途中绝不弹；
+   *   ② 判定时：有选区 → 弹/保持；没选区且面板已显示超过 350ms → 收起
+   *      （350ms 宽限期用来避开「刚弹出就收到 collapse」的收尾竞态）。
+   */
+  /**
+   * 去抖时长。0.5 是 300ms（FleurEPUB 同构），0.6.0 真机（小米平板）反馈：
+   * 菜单弹出来的时候，系统选区两端的拖拽滑杆还没就位 —— 滑杆比选区文字晚出现，
+   * 而菜单先弹，观感就是「太快了」。Android 上滑杆出现没有可监听的事件，
+   * 只能把去抖放宽到 600ms 给它留时间。拖动选择手柄期间 selectionchange
+   * 连续派发、计时器不断重置，拖动全程依旧不会弹菜单。
+   */
+  private static readonly SELECTION_SETTLE_MS = 600;
+  /**
+   * 当前面板若是「选区自动唤起」的，记下它对应的选区指纹；否则为空串。
+   *
+   * 由 hideContextMenu 统一清空。保留原因：供后续判断「面板是否由选区自动唤起」
+   * （例如自定义编辑器之外的地方要区分自动面板与标注编辑面板）。
+   */
+  private openAutoKey = '';
+  /** 最近一次自动弹出的选区指纹 —— 同一选区不重复弹。 */
+  private lastAutoMenuKey = '';
+  /** 当前打开的浮动面板（同一时刻只允许一个，选区连续变化时会重建）。 */
+  private openPanel: HTMLElement | null = null;
+  /** 当前面板「点击外部关闭」的监听器，由 hideContextMenu 统一摘除。 */
+  private contextMenuCloser: ((e: Event) => void) | null = null;
+  /** 面板最近一次显示的时刻：选区清空后要等 350ms 才收，避免拖手柄时闪掉。 */
+  private contextMenuShownAt = 0;
+  /** 面板请求的代际号：让 await 期间被超越的旧请求自行作废（见 showContextMenu）。 */
+  private contextMenuEpoch = 0;
   private commentBubbles: CommentBubble[] = [];
   private lastSnapshot: SelectionSnapshot | null = null;
   /** 快照有效期：活选区被清空后，右键仍可用最近一次选区 */
@@ -191,6 +249,23 @@ export class PDFPatcher {
     document.addEventListener('mousedown', this.boundMouseDown, true);
     document.addEventListener('mouseup', this.boundMouseUp, true);
     document.addEventListener('keydown', this.boundKeyDown, true);
+
+    // 移动端：长按选字会被 WebView 的原生文本选择接管，`contextmenu` 不派发，
+    // 于是批注菜单永远不出现（真机 0.3.0 反馈：选中了文字，但没有任何菜单）。
+    // 改用 `selectionchange` 驱动 —— 选区**停手 300ms** 后自动弹出，与手势类型无关。
+    // 桌面端保持右键语义，不挂这个监听。
+    //
+    // ⚠️ 只挂这一个监听，与 FleurEPUB 一字不差。0.4.4 曾额外挂 touchstart/move/end
+    // 做「手势静默期」，但拖原生选择手柄时 WebView 根本不向页面派发这些事件，
+    // 那些标志位在真机恒为假 —— 除增加复杂度外没有任何作用，已全部移除。
+    if (isMobileUI(this.plugin)) {
+      this.boundSelectionChange = () => this.onSelectionChange();
+      document.addEventListener('selectionchange', this.boundSelectionChange);
+      // 移动端「点按已有标注 → 清除菜单」：真机反馈在移动端没有右键入口，
+      // 已有的高亮 / 划线 / 批注清除不出去（只能进侧边栏删）。点按是第二入口。
+      this.boundAnnotationTap = (e: MouseEvent) => this.onAnnotationTap(e);
+      document.addEventListener('click', this.boundAnnotationTap, true);
+    }
 
     // 监听 file-open（文件切换时触发）
     this.plugin.registerEvent(
@@ -542,6 +617,8 @@ export class PDFPatcher {
         const ulColor = ann.color || '#E8590C';
         allSegments.forEach((seg) => {
           this.wrapAndStyle(seg, (el) => {
+            // 按数据渲染 wavy / solid；移动端由 CSS 覆盖（body.fleur-pdf-mobile
+            // 下 wavy 一律按直线绘制，规避 Android 的 wavy 退化问题）。
             el.addClass('fleur-underline');
             el.addClass(ann.underlineStyle === 'wavy' ? 'fleur-underline-wavy' : 'fleur-underline-solid');
             el.setCssProps({ '--fleur-underline-color': ulColor });
@@ -815,6 +892,96 @@ export class PDFPatcher {
     }
   }
 
+  /* ════════════════════════════════════════════
+     移动端：选中文字 → 自动弹出批注菜单
+     ════════════════════════════════════════════ */
+
+  /**
+   * 选区变化 → 去抖后判定是否弹出 / 收起批注菜单（仅移动端注册）。
+   *
+   * 与 FleurEPUB 的 `selectionchange` 处理完全同构：每次变化都重置计时器 ⇒
+   * 只有**停手 300ms** 才真正判定一次。拖动选择手柄期间 selectionchange 连续派发、
+   * 计时器不断被推后，因此**拖动全程绝不会弹菜单** —— 这正是用户要的
+   * 「选完了再弹」，而不是靠猜手势。
+   *
+   * ⚠️ 0.5 移除的三样东西（均为 0.4.4 所加，真机证明有害或无效）：
+   *   · 「选区一变就先收掉面板」—— 拖动中面板被反复收放、闪烁，观感是「菜单乱弹」；
+   *   · 「手势静默期」(touchSelecting / lastTouchAt) —— 拖原生选择手柄时 WebView
+   *     不向页面派发 touch 事件，那些标志位在真机恒为假，纯属无效复杂度；
+   *   · 900ms 去抖 —— 比 FleurEPUB 的 300ms 更钝，用户选完还要干等半秒。
+   */
+  private onSelectionChange(): void {
+    if (this.selectionMenuTimer !== null) window.clearTimeout(this.selectionMenuTimer);
+    this.selectionMenuTimer = window.setTimeout(() => {
+      this.selectionMenuTimer = null;
+      this.syncMobileMenuWithSelection();
+    }, PDFPatcher.SELECTION_SETTLE_MS);
+  }
+
+  /**
+   * 选区稳定后同步批注面板：有选区就弹（或保持），没选区就收。
+   *
+   * 语义与 FleurEPUB 的 `selectionchange` 处理完全一致 —— 它用的是
+   * 「稳定 300ms 后有选区就显示工具条 / 无选区且已显示超过 350ms 就隐藏」。
+   * 两个数字直接照搬，那是真机调出来的手感：去掉隐藏分支就会留下一个
+   * 「选区早没了、面板还杵在那」的僵尸面板。
+   */
+  private syncMobileMenuWithSelection(): void {
+    // 手写模式下 textLayer 已禁选：既不再弹，也要把可能在切换前留下的面板收掉
+    if (document.body.classList.contains('fleur-pdf-ink-active')) {
+      this.hideContextMenu();
+      return;
+    }
+
+    const selection = window.getSelection();
+    const text =
+      selection && !selection.isCollapsed && selection.rangeCount > 0 ? selection.toString().trim() : '';
+
+    if (!text || !selection) {
+      // 选区被清空（点空白 / 取消选择）→ 面板跟着收起来
+      if (this.openPanel?.isConnected && Date.now() - this.contextMenuShownAt > 350) this.hideContextMenu();
+      return;
+    }
+
+    if (!this.currentPagePath) return;
+
+    // 焦点在输入框 / 我们自己的面板里 → 不弹（批注编辑中、AI 提问中）
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.closest?.('input, textarea, .fleur-context-panel, .modal-container')) return;
+
+    const range = selection.getRangeAt(0);
+    const anchorNode = range.commonAncestorContainer;
+    const anchor = (anchorNode.nodeType === Node.ELEMENT_NODE
+      ? anchorNode
+      : anchorNode.parentElement) as HTMLElement | null;
+    if (!anchor || !this.isInPDFView(anchor)) return;
+
+    const snapshot = this.buildSnapshotFromSelection(selection);
+    if (!snapshot?.text) return;
+
+    // 同一段选区且面板已经开着 → 原样保持，不重建（重建会让面板闪一下）。
+    // 注意条件里必须带 `this.openPanel`：旧版只比 key，而 key 一旦记下就永不清空，
+    // 于是「同一段文字第二次选中」时菜单根本不出现，用户以为功能又坏了。
+    const key = `${ text.length }|${ text.slice(0, 48) }`;
+    if (key === this.lastAutoMenuKey && this.openPanel?.isConnected) return;
+    this.lastAutoMenuKey = key;
+
+    const rect = range.getBoundingClientRect();
+    // ↓ 44px：Android 选区两端的原生拖拽滑杆有 ~36px 高、从选区下角向下伸，
+    // 10px 的旧间距会让菜单正好压在滑杆上（真机反馈「滑杆挡住菜单」）。
+    void this.showContextMenu(
+      Math.min(Math.max(8, rect.left + rect.width / 2), Math.max(8, window.innerWidth - 8)),
+      rect.bottom + 44,
+      snapshot,
+      [],
+      // 声明这是「选区自动唤起」的面板：onSelectionChange 据此判断能否在选区变化时收起它。
+      // ⚠️ 必须作为参数传进去，不能在这里直接给 this.openAutoKey 赋值 —— showContextMenu
+      // 内部有一句同步的 hideContextMenu()（单实例清理），会把刚赋的值清成空串，
+      // 于是「选区一变就收面板」的判定永远不成立。
+      key,
+    );
+  }
+
   /** 根据页码查找页面元素 */
   private findPageByNumber(pageNum: number): HTMLElement | null {
     const pages = document.querySelectorAll('.page');
@@ -825,7 +992,44 @@ export class PDFPatcher {
     return null;
   }
 
-  private async showContextMenu(_x: number, _y: number, snapshot: SelectionSnapshot, hitAnnIds: string[] = []) {
+  /**
+   * 关闭当前的文本批注面板（单实例语义）。
+   *
+   * 对齐 FleurEPUB 的选区工具条做法：它只维护一个 `selToolbar` 引用，
+   * 任何新工具条出现前先 hide 旧的；面板消失时（选区被清空）也主动 hide。
+   * 本插件此前缺这两条 —— openPanel 字段声明了却从未赋值，于是每弹一次就
+   * 往 body 上叠一个新的，真机表现为「选字后菜单反复弹、叠成一片」。
+   */
+  private hideContextMenu(): void {
+    if (this.contextMenuCloser) {
+      document.removeEventListener('pointerdown', this.contextMenuCloser, true);
+      this.contextMenuCloser = null;
+    }
+    this.openPanel?.remove();
+    this.openPanel = null;
+    this.openAutoKey = '';
+  }
+
+  /** 外部强制收起浮动面板（进入手写模式时调用：移动端选不出文本，面板只会挡路）。 */
+  closeFloatingMenu(): void {
+    // 代际 +1：把「已在 await 途中、还没来得及创建面板」的那次请求一并作废，
+    // 否则它会在手写模式已经打开之后又把面板弹出来。
+    this.contextMenuEpoch++;
+    this.hideContextMenu();
+  }
+
+  private async showContextMenu(
+    _x: number,
+    _y: number,
+    snapshot: SelectionSnapshot,
+    hitAnnIds: string[] = [],
+    /** 非空表示「这是选区自动唤起的面板」，值即该选区的指纹（见 openAutoKey）。 */
+    autoKey = '',
+  ) {
+    // 本次请求的代际。下面有 await，快速连续选字时可能多个请求同时在途，
+    // 而它们的耗时不定 —— 可能出现「旧快照后落地、盖掉新面板」。await 之后校验一次。
+    const epoch = ++this.contextMenuEpoch;
+
     const s = this.plugin.settings;
     const underlineColor = s.underlineColor || '#6B0000';
     const highlightColors = s.highlightColors.length >= 3
@@ -846,8 +1050,33 @@ export class PDFPatcher {
       }
     }
 
+    // await 期间有更新的请求进来（或被强制关闭）→ 本次让位，不再创建面板
+    if (epoch !== this.contextMenuEpoch) return;
+
+    // 单实例：先把上一个面板收掉。
+    // 此前这里缺了这一步（openPanel 字段声明了却从未赋值），于是选区每稳定一次
+    // 就往 body 上叠一个新面板 —— 真机表现就是「选中文本后菜单反复弹出、越叠越多，
+    // 挡住正文没法继续干活」。FleurEPUB 的选区工具条是同样的单实例语义。
+    this.hideContextMenu();
+    // hideContextMenu 刚把 openAutoKey 清空，这里按调用方声明重新登记
+    this.openAutoKey = autoKey;
+
     // 创建浮动面板
     const panel = createDiv({ cls: 'fleur-context-panel' });
+    this.openPanel = panel;
+    this.contextMenuShownAt = Date.now();
+    /** 关闭当前面板（各按钮动作完成后统一走它，保证 openPanel 被清空）。 */
+    const close = () => this.hideContextMenu();
+
+    // 拖拽把手：菜单默认贴着选区弹出，可能挡住正文或选区滑杆 —— 用户可拖走。
+    // 只认把手，按钮区交互不受影响（与手写笔盒的把手语义一致）。
+    // ⚠️ 仅移动端创建：桌面端面板 DOM 与 1.5.15 保持一致。
+    if (isMobileBody()) {
+      const grip = panel.createDiv('fleur-context-grip');
+      setIcon(grip, 'grip-vertical');
+      grip.setAttribute('aria-label', '拖动菜单');
+      this.attachPanelDrag(panel, grip);
+    }
 
     // 复制
     const copyBtn = panel.createEl('button');
@@ -856,23 +1085,48 @@ export class PDFPatcher {
     iconCopy(copyBtn);
     copyBtn.addEventListener('click', () => {
       void navigator.clipboard.writeText(text).then(() => new Notice('已复制'));
-      panel.remove();
+      close();
     });
 
     // 分隔
     panel.createDiv({ cls: 'fleur-context-sep' });
 
     // 三个高亮颜色圆点
-    const hlGroup = panel.createDiv({ cls: 'fleur-context-group' });
+    const hlGroup = panel.createDiv('fleur-context-group');
     highlightColors.forEach((color, idx) => {
       const hlBtn = hlGroup.createEl('button');
       hlBtn.addClass('fleur-context-item', 'fleur-context-hl');
       hlBtn.title = `高亮 ${idx + 1}`;
-      const dot = hlBtn.createDiv({ cls: 'fleur-context-hl-dot' });
-      dot.setCssStyles({ background: color });
+      if (isMobileBody()) {
+        // 移动端用 SVG 圆点，而不是「div + 行内背景色」。
+        //
+        // 这是踩过两次的同一道坎：移动端 WebView 下，div 的尺寸与背景最终都由样式表
+        // 决定，一旦用户主题对 button/div 有更高优先级的规则（或样式表时序异常），
+        // 圆点就渲染成一个不可见的空盒子 —— 真机反馈的「图标有了、颜色没了」。
+        // 而 SVG 的 fill / width / height 是**元素自身的属性**，样式表只能叠加，
+        // 不能让它「没有颜色、没有尺寸」。菜单里其余图标之所以一直好好的，
+        // 正因为它们本来就是 SVG；现在圆点与它们同源。
+        // 桌面端保持 1.5.15 的 div 圆点，DOM 与样式完全一致。
+        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        dot.setAttribute('class', 'fleur-context-hl-dot');
+        dot.setAttribute('width', '20');
+        dot.setAttribute('height', '20');
+        dot.setAttribute('viewBox', '0 0 20 20');
+        dot.setAttribute('aria-hidden', 'true');
+        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        circle.setAttribute('cx', '10');
+        circle.setAttribute('cy', '10');
+        circle.setAttribute('r', '9');
+        circle.setAttribute('fill', color);
+        dot.appendChild(circle);
+        hlBtn.appendChild(dot);
+      } else {
+        const dot = hlBtn.createDiv({ cls: 'fleur-context-hl-dot' });
+        dot.setCssStyles({ background: color });
+      }
       hlBtn.addEventListener('click', () => {
         void this.applyHighlight(text, pageNum, pages, color, 'highlight', filePath, endPage);
-        panel.remove();
+        close();
       });
     });
 
@@ -886,18 +1140,22 @@ export class PDFPatcher {
     iconUnderlineSolid(solidUlBtn, underlineColor);
     solidUlBtn.addEventListener('click', () => {
       void this.applyUnderline(text, pageNum, pages, 'solid', underlineColor, filePath, endPage);
-      panel.remove();
+      close();
     });
 
-    // 划线 - 波浪
-    const wavyUlBtn = panel.createEl('button');
-    wavyUlBtn.addClass('fleur-context-item');
-    wavyUlBtn.title = '波浪';
-    iconUnderlineWavy(wavyUlBtn, underlineColor);
-    wavyUlBtn.addEventListener('click', () => {
-      void this.applyUnderline(text, pageNum, pages, 'wavy', underlineColor, filePath, endPage);
-      panel.remove();
-    });
+    // 划线 - 波浪：桌面端保留 1.5.15 的波浪线（text-decoration 在桌面渲染正常）。
+    // 移动端不提供入口 —— Android WebView 的 wavy 装饰在小字 + 缩放下退化成点。
+    // 历史数据里的 wavy 在移动端由 CSS 覆盖为直线渲染（见 styles.css）。
+    if (!isMobileBody()) {
+      const wavyUlBtn = panel.createEl('button');
+      wavyUlBtn.addClass('fleur-context-item');
+      wavyUlBtn.title = '波浪';
+      iconUnderlineWavy(wavyUlBtn, underlineColor);
+      wavyUlBtn.addEventListener('click', () => {
+        void this.applyUnderline(text, pageNum, pages, 'wavy', underlineColor, filePath, endPage);
+        close();
+      });
+    }
 
     // 分隔
     panel.createDiv({ cls: 'fleur-context-sep' });
@@ -909,7 +1167,7 @@ export class PDFPatcher {
     iconComment(commentBtn);
     commentBtn.addEventListener('click', () => {
       this.showCommentDialog(text, pageNum, pages, filePath, endPage);
-      panel.remove();
+      close();
     });
 
     // 分隔
@@ -922,7 +1180,7 @@ export class PDFPatcher {
     iconAI(askBtn);
     askBtn.addEventListener('click', () => {
       this.askAI(text, '请回答关于这段内容的问题', _x, _y);
-      panel.remove();
+      close();
     });
 
     // 分隔
@@ -935,7 +1193,7 @@ export class PDFPatcher {
     iconTranslate(translateBtn);
     translateBtn.addEventListener('click', () => {
       this.askAITranslate(text, _x, _y);
-      panel.remove();
+      close();
     });
 
     // 清除标注（右键点击处命中标注层时显示 — 分层列出，叠加标注逐项清除）
@@ -947,21 +1205,24 @@ export class PDFPatcher {
         clearBtn.title = this.describeAnnotation(item.ann);
         iconEraser(clearBtn);
         clearBtn.addEventListener('click', () => {
-          panel.remove();
+          close();
           void this.removeAnnotationFromPdf(item.id, item.ann);
         });
       }
     }
 
-    // 点击外部关闭面板
-    const closeHandler = (e: MouseEvent) => {
-      if (!panel.contains(e.target as Node)) {
-        panel.remove();
-        document.removeEventListener('mousedown', closeHandler, true);
-      }
+    // 点击外部关闭面板。
+    // 用 pointerdown 而不是 mousedown：移动端触摸只派发 pointer/touch 事件，
+    // mousedown 在部分 WebView 里要等 300ms 才合成，面板会「点外面关不掉」。
+    const closeHandler = (e: Event) => {
+      if (panel.contains(e.target as Node)) return;
+      this.hideContextMenu();
     };
+    this.contextMenuCloser = closeHandler;
     window.setTimeout(() => {
-      document.addEventListener('mousedown', closeHandler, true);
+      // 这一拍内面板可能已被关掉（连续选字会重建面板），此时不要再挂监听，
+      // 否则会积下一堆永不触发也永不释放的 document 级监听。
+      if (this.openPanel === panel) document.addEventListener('pointerdown', closeHandler, true);
     }, 0);
 
     // 定位面板（确保不超出视口）
@@ -985,6 +1246,57 @@ export class PDFPatcher {
     panel.setCssStyles({ left: `${posX}px`, top: `${posY}px` });
   }
 
+  /**
+   * 选区菜单面板拖拽（只认把手）。
+   *
+   * pointer capture 拖动：move 里按「起点面板位置 + 指针位移」重设 left/top，
+   * 并夹紧到视口内（留 8px 边距）。不持久化 —— 面板随选区即时重建，
+   * 每次弹出都回到默认位置，拖动只是当次的临时避让。
+   */
+  private attachPanelDrag(panel: HTMLElement, grip: HTMLElement): void {
+    let dragging = false;
+    let pointerId = -1;
+    let startX = 0;
+    let startY = 0;
+    let baseX = 0;
+    let baseY = 0;
+
+    grip.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      dragging = true;
+      pointerId = e.pointerId;
+      const rect = panel.getBoundingClientRect();
+      startX = e.clientX;
+      startY = e.clientY;
+      baseX = rect.left;
+      baseY = rect.top;
+      // touch-action: none（见样式）已挡掉触摸滚动，capture 保证指针移出把手也继续收事件
+      grip.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!dragging || e.pointerId !== pointerId) return;
+      const w = panel.offsetWidth;
+      const h = panel.offsetHeight;
+      const nx = Math.min(Math.max(8, baseX + (e.clientX - startX)), window.innerWidth - w - 8);
+      const ny = Math.min(Math.max(8, baseY + (e.clientY - startY)), window.innerHeight - h - 8);
+      panel.setCssStyles({ left: `${nx}px`, top: `${ny}px` });
+      e.preventDefault();
+    });
+    const end = (e: PointerEvent) => {
+      if (!dragging || e.pointerId !== pointerId) return;
+      dragging = false;
+      try {
+        grip.releasePointerCapture(e.pointerId);
+      } catch {
+        /* 指针已释放，忽略 */
+      }
+    };
+    grip.addEventListener('pointerup', end);
+    grip.addEventListener('pointercancel', end);
+  }
+
   // ════════════════════════════════════════════
   //  右键一键清除标注 — 点击标注区域内任意位置即可，无需选中
   // ════════════════════════════════════════════
@@ -1002,6 +1314,33 @@ export class PDFPatcher {
       cur = cur.parentElement;
     }
     return ids;
+  }
+
+  /**
+   * 移动端点按已有标注 → 弹清除菜单（桌面端的对应入口是右键）。
+   *
+   * 触发条件从严，避免误弹：
+   *   ① 命中处必须真的有标注层（由内向外收集，叠加标注逐层列出）；
+   *   ② 当前无文字选区 —— 选区语义交给 selectionchange 菜单；
+   *   ③ 不抢批注气泡自己的交互（它有独立的删除菜单）；
+   *   ④ 只认 textLayer 里的命中，我们的面板 / 弹窗 / 按钮一律放行。
+   */
+  private onAnnotationTap(e: MouseEvent) {
+    if (!this.isInPDFView(e.target)) return;
+    // 手写批注模式下，点按属于墨迹引擎（落笔 / 擦除 / 套索 / 滚动），
+    // 永不弹文本标注清除菜单 —— 真机反馈「点手写笔迹也弹出清除高亮窗口」。
+    if (document.body.hasClass('fleur-pdf-ink-active')) return;
+    const el = e.target as HTMLElement | null;
+    if (!el?.closest) return;
+    if (el.closest('.fleur-comment-bubble, .fleur-context-panel, .modal-container, button, a')) return;
+    if (!el.closest('.textLayer')) return;
+    const selection = window.getSelection();
+    if (selection && !selection.isCollapsed && selection.toString().trim()) return;
+    const ids = this.collectAnnotationIdsAt(e.target);
+    if (ids.length === 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    void this.showClearAnnotationMenu(e.clientX, e.clientY, ids);
   }
 
   /** 无选区右键命中标注 → 原生菜单分层列出清除项（与批注气泡右键菜单风格一致） */
@@ -1169,6 +1508,15 @@ export class PDFPatcher {
     return annId;
   }
 
+  /**
+   * 应用划线标注。
+   *
+   * 桌面端保留 solid / wavy 两种样式（与 1.5.15 一致）；移动端菜单只提供 solid
+   * 入口 —— Android WebView 的 text-decoration:wavy 在小字 + 缩放下退化成
+   * 不规则点（真机反馈「下划波浪线没有波浪，都是点」）。
+   * 历史数据里的 underlineStyle: 'wavy' 在移动端由 CSS 覆盖为直线渲染，
+   * 数据字段保留读写兼容。
+   */
   private async applyUnderline(
     text: string, pageNum: number, pages: PageSelection[],
     style: UnderlineStyle, color: string,
@@ -1946,6 +2294,21 @@ export class PDFPatcher {
       document.removeEventListener('keydown', this.boundKeyDown, true);
       this.boundKeyDown = null;
     }
+    if (this.boundSelectionChange) {
+      document.removeEventListener('selectionchange', this.boundSelectionChange);
+      this.boundSelectionChange = null;
+    }
+    if (this.boundAnnotationTap) {
+      document.removeEventListener('click', this.boundAnnotationTap, true);
+      this.boundAnnotationTap = null;
+    }
+    // 0.5 起不再有 touchstart / touchmove / touchend 的菜单相关监听
+    // （随「手势静默期」一并移除，见 onSelectionChange 的说明）
+    if (this.selectionMenuTimer !== null) {
+      window.clearTimeout(this.selectionMenuTimer);
+      this.selectionMenuTimer = null;
+    }
+    this.hideContextMenu();
     this.stopPdfViewerWatcher();
     this.commentBubbles.forEach(b => b.el.remove());
     this.commentBubbles = [];

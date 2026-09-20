@@ -987,16 +987,25 @@
   box-decoration-break: clone;
 }
 
+.fleur-underline-solid {
+  text-decoration: underline;
+  text-decoration-style: solid;
+  text-decoration-color: var(--fleur-underline-color, #E8590C);
+}
+
+/* 波浪线（与 1.5.15 一致）：桌面端保留该样式。
+   移动端不提供波浪线入口（Android WebView 的 wavy 装饰在 textLayer 小字 +
+   缩放下退化成点）；历史 wavy 数据在移动端由下方 body.fleur-pdf-mobile
+   覆盖规则按直线渲染，数据字段保留读写兼容。 */
 .fleur-underline-wavy {
   text-decoration: underline;
   text-decoration-style: wavy;
   text-decoration-color: var(--fleur-underline-color, #E8590C);
 }
 
-.fleur-underline-solid {
-  text-decoration: underline;
+/* 移动端覆盖：wavy 数据按直线绘制（见 patcher.ts applyUnderline 说明）。 */
+body.fleur-pdf-mobile .fleur-underline-wavy {
   text-decoration-style: solid;
-  text-decoration-color: var(--fleur-underline-color, #E8590C);
 }
 
 .fleur-page-relative {
@@ -1062,7 +1071,45 @@
   gap: 3px;
 }
 
-.fleur-context-hl-dot {
+/* 菜单拖拽把手：只认把手拖动，按钮区不受影响（与手写笔盒把手同语义）。
+   touch-action: none 防止触摸拖动时页面跟着滚。 */
+.fleur-context-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  align-self: stretch;
+  cursor: grab;
+  touch-action: none;
+  color: var(--text-faint);
+  border-radius: 4px;
+}
+
+.fleur-context-grip:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-muted);
+}
+
+.fleur-context-grip:active {
+  cursor: grabbing;
+}
+
+.fleur-context-grip svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+  pointer-events: none;
+}
+
+/* 高亮颜色圆点 —— 元素是 SVG（见 patcher.ts）。
+   颜色来自 <circle fill="…">，尺寸同时给 CSS 与 svg 属性，任一层失效都还看得见。
+   选择器必须比 `.fleur-context-item svg`（0,1,1）更具体，否则会被描边图标的
+   16px 抢走尺寸 —— 那会让圆点缩成米粒大小，看起来仍像「没有颜色图标」。 */
+/* 高亮颜色圆点（桌面端 div 实现，与 1.5.15 一致）。
+   移动端圆点改为 SVG 元素（类名相同，但选择器限定 svg.，见下方）
+   —— :not(svg) 防止本条的边框 / 阴影误加到移动端 SVG 上。 */
+.fleur-context-hl-dot:not(svg) {
   width: 18px;
   height: 18px;
   border-radius: 50%;
@@ -1074,6 +1121,27 @@
 .fleur-context-hl:hover .fleur-context-hl-dot {
   transform: scale(1.1);
   border-color: var(--text-muted);
+}
+
+/* 移动端：SVG 圆点（patcher 在移动端以 SVG 渲染高亮颜色点，
+   fill 等关键属性是元素自带的，样式表只管布局与过渡）。 */
+.fleur-context-item svg.fleur-context-hl-dot {
+  width: 20px;
+  height: 20px;
+  display: block;
+  flex: 0 0 auto;
+}
+
+/* 划线图标（直线 / 波浪）的描边用的是用户的划线颜色，默认 #6B0000。
+   深色主题下这个深红几乎融进背景 —— 真机上看起来就是「图标没显示」。
+   补一层同形状的浅色衬底（drop-shadow 跟着 stroke 走），
+   既保住「这个颜色就是会画上去的颜色」这层信息，又保证任何主题下都看得清。 */
+.theme-dark .fleur-context-item svg.fleur-context-ul {
+  filter: drop-shadow(0 0 1.4px rgba(255, 255, 255, 0.65));
+}
+
+.theme-light .fleur-context-item svg.fleur-context-ul {
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.2));
 }
 
 .fleur-sidebar-textarea {
@@ -1318,4 +1386,558 @@
 .theme-dark .fleur-search-flash {
   background: rgba(255, 145, 0, 0.5) !important;
   outline: 2px solid rgba(255, 145, 0, 0.85);
+}
+
+/* ============================================================
+   移动端手写批注
+   ------------------------------------------------------------
+   作用域：body.fleur-pdf-mobile
+   桌面端 body 上没有这个类（除非用户在设置里主动打开「移动端调试」），
+   因此以下规则在桌面端永不匹配 —— 这是「桌面零影响」在样式侧的保证。
+   配合 platform.ts 的整表注入策略，桌面端连 pdf.js 编辑器样式都不会加载。
+   ============================================================ */
+
+/* ── 双态切换器（右下角常驻胶囊：编辑 / 手写） ── */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  /* ⚠️ 必须是 none，不能是 manipulation：
+     manipulation 仍允许浏览器做平移手势 —— 手指按住胶囊一拖，
+     WebView 判定为滚动并接管（pointercancel），拖动立刻中断，
+     真机表现就是「拖拽基本不可用，只能挪动两三像素」。 */
+  touch-action: none;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn {
+  width: 40px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--text-muted);
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn.is-active {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn .svg-icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── 悬浮胶囊：拖动中 / 收起成贴边把手 ──
+   拖动中抬层级 + 加深投影，给一个「抓住了」的反馈；
+   收起后只留一根半透明贴边把手 —— 不挡正文，但随时点得回来。
+   （长按 650ms 收起，点把手恢复；命令面板也有同名开关兜底。） */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-dragging {
+  z-index: 40;
+  opacity: 0.92;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed {
+  padding: 0;
+  gap: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed .fleur-pdf-ink-switch-btn {
+  display: none;
+}
+
+/* 把手本体：14×46 的圆角竖条，常态半透明，按住时变实 */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed::after {
+  content: '';
+  display: block;
+  width: 14px;
+  height: 46px;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed:active::after {
+  opacity: 1;
+}
+
+/* ── 悬浮胶囊 / 单段的隐藏 ──
+   三种情况都落到 .is-hidden 上：用户主动关掉、当前不在 PDF 视图、三段全被关掉。
+   必须 !important：.is-collapsed 那条规则改的是 padding/gap/背景，两者叠加时
+   隐藏要无条件胜出，否则会出现「设了隐藏还留着一个把手」。
+   注意不要写成 is-collapsed 的兄弟选择器 —— 两层状态是正交的，可同时为真。 */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-hidden,
+body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn.is-hidden {
+  display: none !important;
+}
+
+/* 图标尺寸自持：不能依赖 Obsidian 全局的 svg.svg-icon 规则 ——
+   移动端 app.css 的版本差异 / 加载时序都可能让该规则缺位，
+   SVG 没有内在尺寸时会在 flex 里被压成一条竖缝（0.1.0 真机「图标几乎不可见」的根因）。
+   因此直接对裸 svg 元素定尺寸，并禁止 flex 收缩。 */
+body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn svg,
+body.fleur-pdf-mobile .fleur-pdf-ink-btn svg {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+}
+
+/* ── 笔盒（底部胶囊） ── */
+body.fleur-pdf-mobile .fleur-pdf-ink-bar {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px;
+  border-radius: 999px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.16);
+  max-width: calc(100vw - 24px);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 笔盒拖把手：克制、贴组内左缘，不与按钮争夺注意力。
+   touch-action:none —— 把手上的手势归我们（拖动笔盒），浏览器别接管。 */
+body.fleur-pdf-mobile .fleur-pdf-ink-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 40px;
+  margin-left: 2px;
+  border-radius: 18px;
+  color: var(--text-faint);
+  cursor: grab;
+  touch-action: none;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-grip .svg-icon {
+  width: 15px;
+  height: 15px;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-bar.is-dragging {
+  opacity: 0.94;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-btn {
+  position: relative;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 20px;
+  color: var(--text-muted);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-btn.is-active {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-btn.is-primary {
+  color: var(--text-on-accent);
+  background-color: var(--interactive-accent);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-btn .svg-icon {
+  width: 19px;
+  height: 19px;
+}
+
+/* 同上：裸 svg 兜底（见 ink-switch-btn svg 规则处的说明） */
+body.fleur-pdf-mobile .fleur-pdf-ink-pop svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background-color: var(--background-modifier-border);
+}
+
+/* 颜色按钮右下角的小色块 */
+body.fleur-pdf-mobile .fleur-pdf-ink-swatch {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--background-modifier-border);
+  pointer-events: none;
+}
+
+/* ── 颜色 / 粗细弹出面板 ── */
+body.fleur-pdf-mobile .fleur-pdf-ink-pop {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: none;
+  gap: 8px;
+  padding: 9px;
+  border-radius: 14px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-pop.is-open {
+  display: flex;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-color {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px var(--background-modifier-border);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-color.is-active {
+  border-color: var(--interactive-accent);
+}
+
+/* 擦除模式选项（纯文本胶囊；0.3.0 起移入橡皮自己的设置弹层） */
+body.fleur-pdf-mobile .fleur-pdf-ink-mode {
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border-radius: 9px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-mode.is-active {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+/* 选区擦除的拖选矩形 */
+body.fleur-pdf-mobile .fleur-pdf-erase-rect {
+  position: fixed;
+  z-index: 1000;
+  display: none;
+  pointer-events: none;
+  border: 1.5px dashed var(--interactive-accent);
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+}
+
+/* 套索圈选的实时虚线（fixed 全屏 SVG，pointer-events:none）。
+   真机 0.4.0 反馈「圈选时看不见套索领域」—— 本类此前完全没有 CSS 规则，
+   SVG 没有尺寸被压成 0×0。给到与页面等大的画布 + 虚线 stroke。 */
+body.fleur-pdf-mobile .fleur-pdf-lasso-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 998;
+  pointer-events: none;
+  overflow: visible;
+}
+body.fleur-pdf-mobile .fleur-pdf-lasso-overlay path {
+  fill: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  stroke: var(--interactive-accent);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 圈选完成后**保留**的选区虚线边界（GoodNotes 语义）。
+   自绘原因：编辑层的 border/outline 已被手写模式的全局 CSS 抹平
+   （为了避免「每一笔都带选中描边、相邻几笔像被一个框串起来」），
+   而 GoodNotes 要的是「整组一个框」。所以框由 ink-ui 自己画。
+   0.4.0 真机反馈「套索圈住了却看不到圈的是哪块」即此。
+   background 先给 rgba 兜底，再给 color-mix（老 WebView 忽略后者即可）。 */
+body.fleur-pdf-mobile .fleur-pdf-lasso-box {
+  position: fixed;
+  z-index: 999;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 1.5px dashed var(--interactive-accent);
+  border-radius: 6px;
+  /* 填充压到几乎看不见：框要「标出范围」，不能把底下的正文蒙住。
+     实测量过 7% 在浅色主题下已是明显的淡紫块，故降到 4%。 */
+  background-color: rgba(124, 58, 237, 0.04);
+  background-color: color-mix(in srgb, var(--interactive-accent) 4%, transparent);
+}
+
+/* ── 手写模式下的画面调整 ── */
+
+/* 原生 editToolbar 整块让位给自建笔盒，避免两套 UI 叠在一起。
+   pdf.js 的删除/改色能力已由笔盒接管（updateParams 同时作用于默认值与选择集）。 */
+body.fleur-pdf-mobile.fleur-pdf-ink-active .editToolbar {
+  display: none !important;
+}
+
+/* 手写模式下由我们接管触摸语义（单指落墨、双指滚动由 ink-ui.ts 处理）。
+   touch-action: none 关掉 WebView 自带的滚动/缩放，否则笔迹会被系统手势打断。 */
+body.fleur-pdf-mobile.fleur-pdf-ink-active .annotationEditorLayer {
+  touch-action: none;
+}
+
+/* 墨迹绘制中隐藏文本选择层，避免长按弹出系统选择菜单 */
+body.fleur-pdf-mobile.fleur-pdf-ink-active .textLayer {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ── 大小滑块（0.3.0：替代固定档位圆点） ──
+   0.4.0 小米平板反馈「滑块没有居中」：原 .row 用 align-items: center 但 row 自己是
+   flex 子元素被父列拉伸到 pop 全宽，slider 顶左 + 数值顶右 → 视觉重心偏左。
+   改为列向堆叠：滑块占满宽度在上，数值在下居中 —— 重心稳。 */
+body.fleur-pdf-mobile .fleur-pdf-ink-slider-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px 12px 8px;
+  min-width: 220px;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  /* 拖动由滑块自己处理，别被页面的滚动/手势抢走 */
+  touch-action: none;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  /* 把 thumb 视觉上拉到与 4px 轨道垂直居中（slider 高 22、轨道顶 9、thumb 高 20 → 顶 1） */
+  margin-top: 1px;
+  border: none;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--background-modifier-border);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-slider::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: var(--interactive-accent);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-slider-val {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 粗细弹层：只有一根滑块，纵向排布 */
+body.fleur-pdf-mobile .fleur-pdf-ink-sizes {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+/* 橡皮设置弹层：模式一行 + 大小一行 */
+body.fleur-pdf-mobile .fleur-pdf-ink-eraser-pop {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-eraser-pop .fleur-pdf-ink-modes {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+/* ── 移动端：批注浮动菜单按触摸尺寸放大 ──
+   桌面端 28px 的按钮在平板上点不准（真机反馈）；移动端整体放大到 40px 命中区，
+   并给容器加横向滚动兜住小屏（按钮变多时不会溢出屏幕）。 */
+body.fleur-pdf-mobile .fleur-context-panel {
+  box-sizing: border-box;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  /* 0.6.0 真机反馈：单行 ~350px 在窄屏/分屏下左右图标被截断（overflow-x 滚动
+     也只是把截断变成「要滑动才能看到」）。改为两行自动换行 + 收窄上限，
+     所有图标一次可见。9 个 32px 按钮按 5+4 分两行 ≈ 176px 宽。
+     0.6.3 加左端拖拽把手（16px），上限随之放宽。 */
+  max-width: 204px;
+  flex-wrap: wrap;
+  justify-content: center;
+  row-gap: 3px;
+}
+/* 两行布局下竖分隔线的语义消失（不再承担「分组」的视觉职责），隐藏 */
+body.fleur-pdf-mobile .fleur-context-sep {
+  display: none;
+}
+
+/* 0.4.1 曾把触摸目标放到 40px，真机反馈「菜单太大」—— 现在收到 32px：
+   仍高于触屏 44px 指南的单指舒适区下限之上可接受的范围，
+   换来整条菜单收窄约 1/4，不挡正文。 */
+body.fleur-pdf-mobile .fleur-context-item {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+}
+
+body.fleur-pdf-mobile .fleur-context-item svg {
+  /* Obsidian app.css 的 svg.svg-icon{width:var(--icon-size)} 在移动端
+     WebView 不可靠，显式给尺寸（桌面端沿用 var(--icon-size)，不动）。 */
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+body.fleur-pdf-mobile .fleur-context-group {
+  gap: 2px;
+}
+
+body.fleur-pdf-mobile .fleur-context-item svg.fleur-context-hl-dot {
+  width: 18px;
+  height: 18px;
+}
+
+body.fleur-pdf-mobile .fleur-context-sep {
+  margin: 0 2px;
+}
+
+/* ══════════ 侧边栏批注卡片：触摸设备上的操作按钮 ══════════
+   桌面端用 hover 显隐操作按钮（见 `.fleur-sidebar-card:hover .fleur-sidebar-card-actions`）。
+   触摸屏**没有 hover**，于是 opacity: 0 永远生效 —— 真机反馈的「侧边栏里定位、
+   AI 生成、删除三个图标都没有」根因就在这里，与图标渲染毫无关系，是桌面交互
+   直接搬到触摸设备导致的。
+   Obsidian 移动端会给 body 加 `is-mobile`，插件自己的标记是 `fleur-pdf-mobile`，
+   两者都覆盖（桌面端开「移动端调试」时同样受益）。 */
+body.is-mobile .fleur-sidebar-card-actions,
+body.fleur-pdf-mobile .fleur-sidebar-card-actions {
+  opacity: 1;
+  transition: none;
+}
+
+/* 触摸目标放大到 34px（原 22px，低于可点区域的下限，手指很难点中）；
+   同时把图标色从 text-faint 提到 text-muted，在移动端屏幕上更易辨认。 */
+body.is-mobile .fleur-sidebar-icon-btn,
+body.fleur-pdf-mobile .fleur-sidebar-icon-btn {
+  width: 34px;
+  height: 34px;
+  padding: 6px;
+  color: var(--text-muted);
+}
+
+/* 图标尺寸必须由 CSS 显式给出。
+   Obsidian 的 app.css 里存在针对 svg 的全局规则，而 SVG 的 width/height **属性**
+   优先级低于任何 CSS 规则 —— 只靠属性给尺寸的元素会被抢走。
+   这正是「文本菜单的图标可见、侧边栏的图标不可见」的真正分野：菜单那条有
+   `.fleur-context-item svg` 规则保护，侧边栏这条此前没有。 */
+/* 移动端 WebView 对 svg.svg-icon 的默认尺寸规则不可靠，显式给尺寸；
+   桌面端侧边栏图标沿用默认尺寸，不新增规则（桌面零影响）。 */
+body.fleur-pdf-mobile .fleur-sidebar-icon-btn svg,
+body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
+  display: block;
+  flex: 0 0 auto;
+}
+
+body.fleur-pdf-mobile .fleur-sidebar-icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ============================================================
+   界面入口显隐
+   ------------------------------------------------------------
+   全局规则（不挂在 body.fleur-pdf-mobile 下）：左侧栏图标在桌面端与移动端
+   是同一个元素，两边的用户都有「不想看到它」的需求。
+   由 main.ts 的 applyRibbonVisibility() 切换这个类。
+   ============================================================ */
+.fleur-pdf-ribbon-hidden {
+  display: none !important;
+}
+
+/* ============================================================
+   手写批注覆盖层（0.6.0 自绘引擎）
+   ------------------------------------------------------------
+   committed 层接收输入并常驻显示；draft 层只放进行中的预览
+   （荧光笔 / 橡皮光标 / 套索框），不接收事件。
+   touch-action 必须是 none：按 Pointer Events 规范，touch-action
+   同时约束 touch 与 pen 指针 —— 放行 pan 的话，触控笔一落下
+   浏览器就接管滚动并发 pointercancel（表现为：写字跳屏、橡皮
+   回滚、套索失效）。滚动改由引擎的手指滚动手势程序化驱动。
+   ============================================================ */
+.fleur-ink-canvas {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  z-index: 3;
+}
+.fleur-ink-canvas.is-draft {
+  pointer-events: none;
+  z-index: 4;
 }

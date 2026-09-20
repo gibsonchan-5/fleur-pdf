@@ -48,8 +48,12 @@ export class PdfSearchService {
     });
     for (const leaf of sorted) {
       const view = leaf.view as any;
-      // 多候选兼容：Obsidian 内部结构随版本演进，逐个尝试
+      // 多候选兼容：Obsidian 内部结构随版本演进，逐个尝试。
+      // 现行版是三层懒加载：view.viewer（壳）→ .child（控制器）→ .pdfViewer（App）→ .pdfViewer（真 pdf.js），
+      // 该链与 mobile/ink-engine.ts 的 pickPdfDocument 保持同构，避免再次随版本腐烂。
       const doc =
+        view?.viewer?.child?.pdfViewer?.pdfDocument ??
+        view?.viewer?.child?.pdfViewer?.pdfViewer?.pdfDocument ??
         view?.viewer?.pdfViewer?.pdfDocument ??
         view?.viewer?.pdfDocument ??
         view?.pdfViewer?.pdfDocument ??

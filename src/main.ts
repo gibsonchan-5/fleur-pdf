@@ -13,6 +13,10 @@ import {
   resolveBackend,
   type SecretBackend,
 } from './secret-store';
+import { applyMobileBodyClass, isMobileUI } from './platform';
+import { InkEngine } from './mobile/ink-engine';
+import { InkUI } from './mobile/ink-ui';
+import { installInkStyles, removeInkStyles } from './mobile/ink-styles';
 
 export default class FleurPDFPlugin extends Plugin {
   store: AnnotationStore;
@@ -21,6 +25,20 @@ export default class FleurPDFPlugin extends Plugin {
   settings: FleurSettings = DEFAULT_SETTINGS;
   /** 本机 Obsidian 是否支持官方 SecretStorage（系统钥匙串）。 */
   secretStorageAvailable = false;
+
+  /** 移动端手写批注：内置墨迹引擎的接入层。桌面端也会构造，但不会激活。 */
+  inkEngine: InkEngine;
+  /** 移动端手写批注的 UI。仅 isMobileUI() 为真时创建，桌面端恒为 null。 */
+  inkUI: InkUI | null = null;
+
+  /**
+   * 左侧栏图标元素。
+   *
+   * `addRibbonIcon` 返回的就是那颗 .side-dock-ribbon-action，持有它才能在设置里
+   * 把图标藏起来 —— 真机反馈「批注按钮全局都显示很碍眼」，而 ribbon 是桌面端
+   * 与移动端共用的同一个入口，两边都要能关。
+   */
+  private ribbonEl: HTMLElement | null = null;
 
   /** 当前实际生效的密钥后端（system=钥匙串，vault=data.json 明文）。 */
   get secretBackend(): SecretBackend {
@@ -35,19 +53,57 @@ export default class FleurPDFPlugin extends Plugin {
     this.patcher.install();
     this.search = new PdfSearchService(this.app);
 
+    // 这里必须真正 new 一次，不能只把 InkEngine 当类型用。
+    // 若它只出现在类型位置（`inkEngine: InkEngine`），TS 类型擦除后就没有任何值引用，
+    // 打包器（esbuild treeShaking）会把整个 mobile/ink-engine 模块摇掉 ——
+    // 产物里没有引擎，移动端 this.inkEngine 恒为 undefined，
+    // 而故障是静默的：笔盒按钮照常显示，点下去毫无反应，控制台也不报错。
+    this.inkEngine = new InkEngine(this.app);
+
     this.registerView(VIEW_TYPE_SIDEBAR, (leaf) => {
       return new SidebarView(leaf, this);
     });
 
-    this.addRibbonIcon('file-text', 'FleurPDF', () => {
+    this.ribbonEl = this.addRibbonIcon('file-text', 'FleurPDF', () => {
       void this.activateSidebar();
     });
+    this.applyRibbonVisibility();
 
     this.addCommand({
       id: 'open-sidebar',
       name: '打开批注侧边栏',
       callback: () => { void this.activateSidebar(); }
     });
+
+    // 移动端 UI 相关命令只在移动端（或桌面开启预览形态）注册 ——
+    // 桌面默认状态下命令面板与 1.5.15 完全一致（桌面零影响）。
+    if (isMobileUI(this)) {
+      // 悬浮胶囊被收起 / 被隐藏后，必须留一条「用命令就能找回来」的路：
+      // 否则用户一旦关掉，就只能翻设置页。
+      this.addCommand({
+        id: 'toggle-ink-switcher',
+        name: '显示 / 隐藏手写批注悬浮按钮',
+        callback: () => {
+          if (!this.inkUI) {
+            new Notice('当前未启用移动端批注界面');
+            return;
+          }
+          this.inkUI.toggleSwitcher();
+        }
+      });
+
+      // ribbon 图标藏起来之后的找回路径（设置页之外的第二条）。
+      this.addCommand({
+        id: 'toggle-ribbon-icon',
+        name: '显示 / 隐藏左侧栏图标',
+        callback: () => {
+          this.settings.hideRibbonIcon = this.settings.hideRibbonIcon !== true;
+          void this.saveSettings();
+          this.applyRibbonVisibility();
+          new Notice(this.settings.hideRibbonIcon ? '已隐藏左侧栏图标' : '已显示左侧栏图标');
+        }
+      });
+    }
 
     this.addCommand({
       id: 'restore-annotations',
@@ -117,10 +173,52 @@ export default class FleurPDFPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       deduplicate();
     });
+
+    // 首次加载就同步一次移动端状态。
+    // 桌面端走 else 分支：body class 不添加、<style> 不存在 —— 零影响；
+    // 真机移动端则在插件加载完就把手写入口挂上，不必等用户进设置里拨开关。
+    this.applyMobileMode();
   }
 
   onunload() {
     this.patcher?.uninstall();
+    this.inkUI?.unmount();
+    this.inkUI = null;
+    this.inkEngine?.dispose();
+    removeInkStyles();
+  }
+
+  /**
+   * 同步左侧栏图标的显隐（设置项 / 命令 / 视图重建后都要调一次）。
+   *
+   * 用 class 而不是 detach()：`addRibbonIcon` 的自动清理只在插件卸载时生效，
+   * 手动 detach 后如果用户又打开开关，就得自己重新 add 一次并重挂 click，
+   * 徒增一条易错分支。加类只影响绘制，元素本身始终在册。
+   */
+  applyRibbonVisibility(): void {
+    this.ribbonEl?.toggleClass('fleur-pdf-ribbon-hidden', this.settings.hideRibbonIcon === true);
+  }
+
+  /**
+   * 同步「移动端 UI 是否生效」这一全局状态。
+   *
+   * 由 onload 与设置里的调试开关共同调用，是桌面零影响的唯一开关点：
+   * 关闭时不仅不创建 UI，连 <style> 元素也会从文档里移除 —— 桌面端既不加载
+   * 移动端样式，也不执行任何移动端事件逻辑。
+   */
+  applyMobileMode(): void {
+    applyMobileBodyClass(this);
+    if (isMobileUI(this)) {
+      installInkStyles();
+      if (!this.inkUI) {
+        this.inkUI = new InkUI(this, this.inkEngine);
+        this.inkUI.mount();
+      }
+    } else {
+      this.inkUI?.unmount();
+      this.inkUI = null;
+      removeInkStyles();
+    }
   }
 
   async loadSettings() {

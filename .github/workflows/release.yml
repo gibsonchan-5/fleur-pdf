@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: 校验 tag 与 manifest 版本一致
+        run: node -e 'const m=require("./manifest.json");const t=process.env.GITHUB_REF_NAME;if(m.version!==t){console.error("拒绝发版：tag 是 "+t+"，manifest.json 里的 version 是 "+m.version);process.exit(1);}console.log("版本一致："+t);'
+
+      - name: 安装依赖
+        run: npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+
+      - name: 构建
+        run: npm run build
+
+      - name: 校验构建产物
+        run: |
+          set -e
+          for f in main.js manifest.json styles.css; do
+            if [ ! -s "$f" ]; then echo "缺少构建产物：$f"; exit 1; fi
+          done
+          ls -l main.js manifest.json styles.css
+          node -e 'const m=require("./manifest.json");if(m.id!=="fleur-pdf"){console.error("产物 id 不对： "+m.id);process.exit(1);}console.log("产物 id 正确："+m.id);'
+
+      - name: 创建 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            main.js manifest.json styles.css \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Adds mobile (tablet) handwriting annotation with a dedicated ink overlay engine, palm rejection, and mobile-optimized annotation menus. Desktop experience is unchanged. Fixes panel stacking and outside-click closing in the annotation menu." \
+            --latest
