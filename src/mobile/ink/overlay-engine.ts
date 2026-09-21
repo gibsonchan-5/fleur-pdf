@@ -41,6 +41,15 @@ import { mintStrokeId, type InkStroke, type InkStrokeKind } from './strokes';
 /** 断触宽限期：pointercancel 后保留笔画多久，期间笔重新落下就续写。 */
 const CANCEL_GRACE_MS = 400;
 
+/**
+ * 掌先落、笔后到的判定窗口：滚动被笔接管时，若手势存活短于此值，
+ * 回滚滚动位移（掌压拖走的位移不作数）。存活的滚动更可能是正常指滑。
+ */
+const SCROLL_REVERT_MS = 300;
+
+/** 笔离开感应范围后，拒掌窗口收缩到的时长（ms）。 */
+const PEN_OUT_WINDOW_MS = 250;
+
 /** 笔活动后多久内拒绝一切 touch（防掌压把页面滚走）。 */
 const PEN_TOUCH_REJECTION_MS = 1200;
 
@@ -123,6 +132,15 @@ interface ActiveGesture {
 	scrollVel?: { x: number; y: number };
 	/** 上一个 scroll move 事件的时间戳（算瞬时速度用）。 */
 	scrollTime?: number;
+	/** rAF 合帧：尚未应用的累积位移（CSS px）。 */
+	scrollDx?: number;
+	scrollDy?: number;
+	/** rAF 合帧应用位移的句柄（null = 没有排中的应用帧）。 */
+	scrollRaf?: number | null;
+	/** 手势开始时的滚动位置与时刻（「掌先落、笔后到」回滚位移用）。 */
+	scrollStartTop?: number;
+	scrollStartLeft?: number;
+	scrollStartAt?: number;
 }
 
 /** 套索选区（PDF 用户空间矩形）。 */
@@ -267,6 +285,7 @@ export class InkOverlayEngine {
 		document.addEventListener('pointerup', this.onPointerUp, { capture: true, passive: false });
 		document.addEventListener('pointercancel', this.onPointerCancel, { capture: true, passive: false });
 		document.addEventListener('touchmove', this.onTouchMoveGuard, { capture: true, passive: false });
+		document.addEventListener('pointerout', this.onPointerOut, { capture: true });
 
 		const root: HTMLElement | undefined = viewer?.viewer;
 		if (root) {
@@ -281,6 +300,22 @@ export class InkOverlayEngine {
 		if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
 		this.cancelTimer = null;
 		this.cancelMomentum();
+		// 指滑手势进行中强撤：不提交也不回滚（用户已滚到的位置保持原样），
+		// 但要解除 will-change 提示、取消排中的应用帧，避免残留
+		if (this.active?.tool.mode === 'scroll') {
+			const g = this.active;
+			if (g.scrollRaf) {
+				window.cancelAnimationFrame(g.scrollRaf);
+				g.scrollRaf = null;
+			}
+			if (g.scrollEl) {
+				try {
+					g.scrollEl.setCssStyles?.({ willChange: 'auto' });
+				} catch {
+					/* 忽略 */
+				}
+			}
+		}
 		// 手势进行中强撤：不提交（正常路径 InkUI 会先 flushActiveStroke）
 		this.active = null;
 		document.removeEventListener('pointerdown', this.onPointerDown, { capture: true } as any);
@@ -288,6 +323,7 @@ export class InkOverlayEngine {
 		document.removeEventListener('pointerup', this.onPointerUp, { capture: true } as any);
 		document.removeEventListener('pointercancel', this.onPointerCancel, { capture: true } as any);
 		document.removeEventListener('touchmove', this.onTouchMoveGuard, { capture: true } as any);
+		document.removeEventListener('pointerout', this.onPointerOut, { capture: true } as any);
 		document.body.removeClass('fleur-pdf-ink-stroking');
 		this.pageObserver?.disconnect();
 		this.pageObserver = null;
@@ -483,12 +519,20 @@ export class InkOverlayEngine {
 			const n = Number(el.dataset.pageNumber);
 			if (!Number.isFinite(n) || n < 1) continue;
 			seen.add(n);
+			// ⚠️ 缩放/重渲染时 pdf.js 是对 .page **原地清空子节点**再重画：.page 本体
+			// 不动，我们的覆盖层 canvas 被摘走，但 surface 记录还在、el.isConnected
+			// 仍为 true —— 只判「surface 是否存在」会漏判，表现为缩放后笔迹消失、
+			// 无法落笔（输入目标没了）。必须校验 canvas 还挂在 DOM，不在就拆掉重挂。
+			const sf = this.surfaces.get(n);
+			if (sf && (!sf.committed.isConnected || !sf.draft.isConnected)) {
+				this.unmountSurface(n);
+			}
 			// 只给已渲染出内容的页挂层（canvasWrapper 存在 = 内容已渲染）
 			if (!this.surfaces.has(n) && el.querySelector('.canvasWrapper')) this.mountSurface(n, el);
 		}
 		for (const n of Array.from(this.surfaces.keys())) {
 			const sf = this.surfaces.get(n)!;
-			if (!seen.has(n) || !sf.el.isConnected) this.unmountSurface(n);
+			if (!seen.has(n) || !sf.el.isConnected || !sf.committed.isConnected) this.unmountSurface(n);
 		}
 		this.reapplyHiddenInk();
 	}
@@ -658,27 +702,21 @@ export class InkOverlayEngine {
 			return;
 		}
 		if (g.tool.mode === 'scroll') {
-			// 手指滚动：move 的位移直接灌给滚动容器（touch-action:none 后浏览器不管平移了）。
-			// 必须放在坐标转换之前 —— 手指经常滚出页面边界，cssToPdf 对界外返回 null。
-			const now = e.timeStamp || performance.now();
-			const dt = g.scrollTime !== undefined ? now - g.scrollTime : 0;
-			g.scrollTime = now;
-			const dx = e.clientX - (g.scrollLast?.x ?? e.clientX);
-			const dy = e.clientY - (g.scrollLast?.y ?? e.clientY);
-			g.scrollLast = { x: e.clientX, y: e.clientY };
+			// 手指滚动：位移先累积、rAF 每帧统一应用一次 —— 120Hz 屏上 pointermove
+			// 密于 vsync，逐事件写 scrollTop 是主线程逐事件重排，顺滑度明显差于
+			// 原生滚动（文本模式的主诉）。合帧后每帧一次写、位移用 coalesced
+			// 全量中间采样，跟手不丢点；必须放在坐标转换之前 —— 手指经常滚出
+			// 页面边界，cssToPdf 对界外返回 null。
+			const events =
+				typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : ([] as PointerEvent[]);
+			const list = events.length ? events : [e];
+			for (const ev of list) {
+				g.scrollDx = (g.scrollDx ?? 0) + ev.clientX - (g.scrollLast?.x ?? ev.clientX);
+				g.scrollDy = (g.scrollDy ?? 0) + ev.clientY - (g.scrollLast?.y ?? ev.clientY);
+				g.scrollLast = { x: ev.clientX, y: ev.clientY };
+			}
 			g.moved = true;
-			if (g.scrollEl) {
-				g.scrollEl.scrollTop -= dy;
-				g.scrollEl.scrollLeft -= dx;
-			}
-			// 速度 EMA（px/ms）—— 松手惯性就靠它。跟手阶段本身 1:1 位移不受影响。
-			// dt 过大（事件间隔异常，如被系统卡顿拉长）的采样不可信，跳过。
-			if (g.scrollVel && dt > 0 && dt < 120) {
-				const instX = -dx / dt;
-				const instY = -dy / dt;
-				g.scrollVel.x += (instX - g.scrollVel.x) * 0.25;
-				g.scrollVel.y += (instY - g.scrollVel.y) * 0.25;
-			}
+			this.scheduleScrollApply(g);
 			return;
 		}
 		const sf = g.surface;
@@ -744,6 +782,14 @@ export class InkOverlayEngine {
 	private beginScrollGesture(e: PointerEvent, sf: Surface): void {
 		// 上一轮惯性还在滑就被新触摸接住 —— 立刻停掉，跟手优先
 		this.cancelMomentum();
+		const scrollEl = this.findScrollable(sf.el);
+		// 合成滚动提示：声明滚动位置即将变化，让 compositor 缓存滚动内容、
+		// 程序化 scrollTop 走合成路径 —— 程序化滚动逼近原生顺滑度的关键一步。
+		try {
+			scrollEl?.setCssStyles?.({ willChange: 'scroll-position' });
+		} catch {
+			/* 忽略 */
+		}
 		this.active = {
 			pointerId: e.pointerId,
 			pointerType: e.pointerType,
@@ -752,10 +798,61 @@ export class InkOverlayEngine {
 			moved: false,
 			snapshot: new Map(),
 			scrollLast: { x: e.clientX, y: e.clientY },
-			scrollEl: this.findScrollable(sf.el),
+			scrollEl,
 			scrollVel: { x: 0, y: 0 },
+			scrollDx: 0,
+			scrollDy: 0,
+			scrollRaf: null,
+			scrollStartTop: scrollEl?.scrollTop ?? 0,
+			scrollStartLeft: scrollEl?.scrollLeft ?? 0,
+			scrollStartAt: performance.now(),
 		};
 	}
+
+	/** 排一帧应用累积的滚动位移（每帧最多一次，vsync 对齐）。 */
+	private scheduleScrollApply(g: ActiveGesture): void {
+		if (g.scrollRaf) return;
+		g.scrollRaf = window.requestAnimationFrame(() => {
+			g.scrollRaf = null;
+			this.applyScrollDelta(g);
+		});
+	}
+
+	/** 应用累积位移 + 更新帧级速度 EMA（px/ms，供松手惯性用）。 */
+	private applyScrollDelta(g: ActiveGesture): void {
+		const dx = g.scrollDx ?? 0;
+		const dy = g.scrollDy ?? 0;
+		if (!dx && !dy) return;
+		g.scrollDx = 0;
+		g.scrollDy = 0;
+		if (g.scrollEl) {
+			g.scrollEl.scrollTop -= dy;
+			g.scrollEl.scrollLeft -= dx;
+		}
+		// 帧级速度：整帧位移 / 整帧时间，比逐事件瞬时速度稳。
+		// dt 过大（手指停顿 / 被卡顿拉长）的采样不可信，跳过。
+		const now = performance.now();
+		const dt = g.scrollTime !== undefined ? now - g.scrollTime : 0;
+		g.scrollTime = now;
+		if (g.scrollVel && dt > 0 && dt < 120) {
+			g.scrollVel.x += (-dx / dt - g.scrollVel.x) * 0.35;
+			g.scrollVel.y += (-dy / dt - g.scrollVel.y) * 0.35;
+		}
+	}
+
+	/**
+	 * 笔离开感应范围（pointerout）：把拒掌窗口从 1200ms 收缩到 250ms。
+	 * 「写完抬笔 → 手指滚动」的场景里，不收缩会有一段滚不动的死区 ——
+	 * 这是指滚被误拒的主诉。正常书写时悬停 move 会不断续窗，不受影响；
+	 * 设备不发 pointerout 时行为退化为原状（1200ms），安全兜底。
+	 */
+	private onPointerOut = (e: PointerEvent): void => {
+		if (e.pointerType !== 'pen') return;
+		// 笔势进行中不收缩（断触宽限期依赖窗口语义，别搅局）
+		if (this.active && this.active.tool.mode !== 'scroll') return;
+		const until = performance.now() + PEN_OUT_WINDOW_MS;
+		if (until < this.penActivityUntil) this.penActivityUntil = until;
+	};
 
 	/** 取消进行中的惯性滚动（新手势开始 / 卸载前调用）。 */
 	private cancelMomentum(): void {
@@ -889,6 +986,30 @@ export class InkOverlayEngine {
 		const sf = g.surface;
 
 		if (g.tool.mode === 'scroll') {
+			// rAF 合帧里可能还有没应用的位移：收尾前 flush 干净，跟手零丢失
+			if (g.scrollRaf) {
+				window.cancelAnimationFrame(g.scrollRaf);
+				g.scrollRaf = null;
+			}
+			this.applyScrollDelta(g);
+			// 解除合成滚动提示（will-change 还原为初始值 auto）
+			if (g.scrollEl) {
+				try {
+					g.scrollEl.setCssStyles?.({ willChange: 'auto' });
+				} catch {
+					/* 忽略 */
+				}
+			}
+			if (!commit && g.scrollEl && g.scrollStartAt !== undefined) {
+				// 「掌先落、笔后到」的典型误触：滚动刚起（<300ms）就被笔接管
+				//（笔落下 / 笔悬停让位 / 系统取消都走 commit=false）→ 把掌压拖走
+				// 的位移回滚，落笔时页面不跳。存活更久的滚动视为正常指滑，保持现状。
+				const age = performance.now() - g.scrollStartAt;
+				if (age < SCROLL_REVERT_MS) {
+					g.scrollEl.scrollTop = g.scrollStartTop ?? g.scrollEl.scrollTop;
+					g.scrollEl.scrollLeft = g.scrollStartLeft ?? g.scrollEl.scrollLeft;
+				}
+			}
 			// 正常抬手（commit）且有速度 → 起惯性 fling；cancel / 没动过不起。
 			// 阈值 0.08 px/ms ≈ 80px/s：低于它视作「停住再松手」，不该滑出去。
 			if (commit && g.scrollEl && g.moved && g.scrollVel) {
