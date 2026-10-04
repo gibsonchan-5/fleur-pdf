@@ -38,8 +38,22 @@ import { mintStrokeId, type InkStroke, type InkStrokeKind } from './strokes';
  * 常量
  * ------------------------------------------------------------------------- */
 
-/** 断触宽限期：pointercancel 后保留笔画多久，期间笔重新落下就续写。 */
-const CANCEL_GRACE_MS = 400;
+/**
+ * 断触宽限期：pointercancel 后保留笔画多久，期间笔重新落下就续写。
+ * 1200ms：安卓掌压抑制（小米/三星平板实测）从 cancel 到笔事件恢复的黑窗
+ * 经常超过 400ms——旧值下笔迹被强制提交、用户还在写就断成两截（断触主诉）。
+ * 宽限期内不提交数据，对用户不可见；配合 REBIND_NEAR_PX 近端判定防误并笔。
+ */
+const CANCEL_GRACE_MS = 1200;
+
+/**
+ * 断触续写的「近端」判定（CSS px）：cancel 后笔重新落下时，新落点距笔画
+ * 最后一个原始采样点不超过 max(此值, 笔宽×4) 才接回原笔续写；远端就把旧笔
+ * 提交、新落点开新笔。不设判定的话，宽限内在别处落笔会把两笔连成一条横线。
+ * ⚠️ 距离必须对原始采样点算、不能对 EMA 平滑点算——EMA 滞后会虚增几像素，
+ * 把真续写误判成远端（探针实测 10px 间隙被算成 14.4px 贴着阈值漏过）。
+ */
+const REBIND_NEAR_PX = 16;
 
 /**
  * 掌先落、笔后到的判定窗口：滚动被笔接管时，若手势存活短于此值，
@@ -729,22 +743,45 @@ export class InkOverlayEngine {
 		if (this.active?.tool.mode === 'scroll') this.finishGesture(false);
 		this.cancelMomentum();
 
+		// 已有手势进行中 —— 断触宽限内的续写判定：
+		// 同为笔（旧指针已 cancel）→ 近端重新落下则换绑续写；远端则旧笔就地
+		// 提交、新落点开新笔（否则两笔会被连成一条横跨页面的长线）。
+		if (this.active && this.cancelTimer !== null && this.active.stroke) {
+			const g = this.active;
+			const stroke = g.stroke!;
+			const css = this.clientToCss(g.surface, e.clientX, e.clientY);
+			const pdf = this.cssToPdf(g.surface, css.x, css.y);
+			const vp = this.viewportFor(g.surface.page);
+			// 近端判定以最后一个【原始】采样点为基准（EMA 点滞后，见 REBIND_NEAR_PX 注释）
+			const ref = g.lastRaw;
+			const cnt = stroke.pts.length / 3;
+			const lastX = ref ? ref.x : stroke.pts[(cnt - 1) * 3];
+			const lastY = ref ? ref.y : stroke.pts[(cnt - 1) * 3 + 1];
+			const near =
+				!!pdf &&
+				!!vp?.scale &&
+				Math.hypot((pdf.x - lastX) * vp.scale, (pdf.y - lastY) * vp.scale) <=
+					Math.max(REBIND_NEAR_PX, stroke.width * vp.scale * 4);
+			window.clearTimeout(this.cancelTimer);
+			this.cancelTimer = null;
+			if (near) {
+				g.pointerId = e.pointerId;
+				this.penActivityUntil = performance.now() + PEN_TOUCH_REJECTION_MS;
+				e.preventDefault();
+				e.stopPropagation();
+				this.appendDrawEvent(e);
+				return;
+			}
+			// 远端：旧笔正常提交，落到下面的 beginGesture 开新笔
+			this.finishGesture(true);
+		}
+
 		if (!this.active) {
 			const sf = this.surfaceOfEvent(e);
 			if (!sf) return;
 			this.penActivityUntil = performance.now() + PEN_TOUCH_REJECTION_MS;
 			this.beginGesture(e, sf);
 			return;
-		}
-		// 已有手势进行中 —— 断触宽限内的续写判定：
-		// 同为笔（旧指针已 cancel）→ 换绑到新指针继续画
-		if (this.cancelTimer !== null && this.active.stroke) {
-			window.clearTimeout(this.cancelTimer);
-			this.cancelTimer = null;
-			this.active.pointerId = e.pointerId;
-			e.preventDefault();
-			e.stopPropagation();
-			this.appendDrawEvent(e);
 		}
 		// 其余情况（第二根手指 / 掌压）一律无视 —— 进行中的笔不受任何干扰
 	};
@@ -1205,6 +1242,7 @@ export class InkOverlayEngine {
 		const css = this.clientToCss(sf, clientX, clientY);
 		const pdf = this.cssToPdf(sf, css.x, css.y);
 		if (!pdf) return;
+		g.lastRaw = pdf; // 断触续写的近端判定基准（原始点，非 EMA 点）
 
 		const n = stroke.pts.length / 3;
 		// 防重复点：与上一点几乎重合就丢弃（数字笔偶尔会连发同位置事件）
