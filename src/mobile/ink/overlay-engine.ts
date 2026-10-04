@@ -56,6 +56,23 @@ const CANCEL_GRACE_MS = 1200;
 const REBIND_NEAR_PX = 16;
 
 /**
+ * 幽灵抬笔归并窗口（ms）：真机诊断（小米 2410CRP4CC / Android 16）实锤，
+ * 连续书写中笔固件会瞬时上报 up + 悬停 move + down——up→down 间隔实测仅
+ * 24-30ms，人类不可能完成提笔-落笔动作，用户看到的正是「断触」。笔 up 后
+ * 不立即提交，进本窗口：期间近端重新落下就接回同一笔，超时才真正提交。
+ * 间隔分布完美双峰：幽灵抬笔全部 ≤71ms，用户有意的笔画间提笔全部 ≥384ms，
+ * 150ms 取 2 倍安全余量，两边都不误伤。
+ */
+const GHOST_UP_GRACE_MS = 150;
+
+/**
+ * 幽灵抬笔归并的「近端」判定（CSS px）：悬停期间笔继续在动，重新落下时
+ * 距离实测可达 68px，远超 cancel 续写的 REBIND_NEAR_PX（黑窗期笔基本不动）。
+ * 阈值取 2 倍实测余量；超时前落点比这还远就视为有意开新笔。
+ */
+const GHOST_NEAR_PX = 96;
+
+/**
  * 掌先落、笔后到的判定窗口：滚动被笔接管时，若手势存活短于此值，
  * 回滚滚动位移（掌压拖走的位移不作数）。存活的滚动更可能是正常指滑。
  */
@@ -260,6 +277,8 @@ export class InkOverlayEngine {
 	private active: ActiveGesture | null = null;
 	/** 断触宽限计时器。 */
 	private cancelTimer: number | null = null;
+	/** 宽限来源：true=幽灵抬笔（up 后的归并窗口，近端阈值更宽），false=pointercancel。 */
+	private graceFromUp = false;
 	/** 笔最近活动时刻（掌压拒止窗口用）。 */
 	private penActivityUntil = 0;
 	/** 进行中的笔所触发的「拒绝 touch」窗口。 */
@@ -761,7 +780,10 @@ export class InkOverlayEngine {
 				!!pdf &&
 				!!vp?.scale &&
 				Math.hypot((pdf.x - lastX) * vp.scale, (pdf.y - lastY) * vp.scale) <=
-					Math.max(REBIND_NEAR_PX, stroke.width * vp.scale * 4);
+					Math.max(
+						this.graceFromUp ? GHOST_NEAR_PX : REBIND_NEAR_PX,
+						stroke.width * vp.scale * 4,
+					);
 			window.clearTimeout(this.cancelTimer);
 			this.cancelTimer = null;
 			if (near) {
@@ -797,6 +819,10 @@ export class InkOverlayEngine {
 		}
 		const g = this.active;
 		if (!g || e.pointerId !== g.pointerId) return;
+		// 归并窗口（cancel / 幽灵 up 宽限）内，旧指针的悬停 move 不上墨——
+		// 固件幽灵抬笔的 hover 轨迹若画出来会在笔画上拖出零压细线伪影；
+		// 续写由 onPointerDown 的近端重绑完成，直接从最后原始点接到新落点。
+		if (this.cancelTimer !== null) return;
 		e.preventDefault();
 		e.stopPropagation();
 		this.penActivityUntil = performance.now() + PEN_TOUCH_REJECTION_MS;
@@ -855,6 +881,18 @@ export class InkOverlayEngine {
 		if (!g || e.pointerId !== g.pointerId) return;
 		e.preventDefault();
 		e.stopPropagation();
+		// 幽灵抬笔容错（见 GHOST_UP_GRACE_MS 注释）：up 后不立即提交，进短归并
+		// 窗口——期间近端重新落下（onPointerDown 续写分支）就接回同一笔；
+		// 超时或远端落笔才真正提交。擦除/套索/截图/滚动无此问题，照旧即时结束。
+		if (g.stroke) {
+			this.graceFromUp = true;
+			if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
+			this.cancelTimer = window.setTimeout(() => {
+				this.cancelTimer = null;
+				this.finishGesture(true);
+			}, GHOST_UP_GRACE_MS);
+			return;
+		}
 		this.finishGesture(true);
 	};
 
@@ -865,6 +903,7 @@ export class InkOverlayEngine {
 		// 保留笔画进宽限期：期间笔重新落下（onPointerDown）或带压 move 出现
 		// 就续写；宽限到点才提交。体验上等于「笔没断」。
 		if (g.stroke) {
+			this.graceFromUp = false;
 			if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
 			this.cancelTimer = window.setTimeout(() => {
 				this.cancelTimer = null;
