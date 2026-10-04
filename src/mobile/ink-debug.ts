@@ -1,4 +1,4 @@
-import { TFile, type Plugin } from 'obsidian';
+import { Platform, TFile, type Plugin } from 'obsidian';
 
 /**
  * 手写断触真机诊断记录器。
@@ -101,8 +101,8 @@ export class InkDebugRecorder {
 		this.t0 = performance.now();
 		this.meta = {
 			startAt: new Date().toISOString(),
-			userAgent: navigator.userAgent,
-			platform: navigator.platform,
+			// 审核合规：OS 信息取自 Obsidian Platform API，不用 navigator 检测
+			platform: Platform.isIosApp ? 'iOS' : Platform.isAndroidApp ? 'Android' : Platform.isMobile ? 'Mobile' : 'Desktop',
 			screen: `${window.screen.width}x${window.screen.height} @${window.devicePixelRatio}`,
 			maxTouchPoints: navigator.maxTouchPoints,
 		};
