@@ -18,6 +18,7 @@ import { InkEngine } from './mobile/ink-engine';
 import { OcrEngine } from './mobile/ocr';
 import { InkSync } from './mobile/ink-sync';
 import { InkUI } from './mobile/ink-ui';
+import { InkDebugRecorder } from './mobile/ink-debug';
 import { installInkStyles, removeInkStyles } from './mobile/ink-styles';
 import { getFleurDictBridge, queryMeaning, type FleurDictBridge } from './dict-bridge';
 import { WordbookSync, type WordbookTombstone } from './wordbook-sync';
@@ -40,6 +41,8 @@ export default class FleurPDFPlugin extends Plugin {
   inkEngine: InkEngine;
   /** 手写批注的 UI。仅 isMobileUI() 为真时创建（真机移动端，或桌面开启「桌面端手写批注」）。 */
   inkUI: InkUI | null = null;
+  /** 手写断触真机诊断记录器（命令开关，桌面默认零影响） */
+  inkDebug: InkDebugRecorder | null = null;
 
   /** 本地 OCR（tesseract.js 懒加载）：截图取字的离线通道。 */
   ocr = new OcrEngine(this);
@@ -186,6 +189,24 @@ export default class FleurPDFPlugin extends Plugin {
           new Notice(this.settings.hideRibbonIcon ? '已隐藏左侧栏图标' : '已显示左侧栏图标');
         }
       });
+
+      // 手写断触真机诊断：记录断触前后完整的指针/触摸/焦点事件流到
+      // FleurPDF/ink-debug.json（非隐藏文件，可随 vault 同步到电脑端分析）。
+      this.addCommand({
+        id: 'ink-debug-record',
+        name: '手写断触诊断：开始 / 停止事件记录',
+        callback: () => {
+          if (!this.inkDebug) this.inkDebug = new InkDebugRecorder(this);
+          if (this.inkDebug.recording) {
+            void this.inkDebug.stop().then(({ count, path }) => {
+              new Notice(`诊断已停止：共 ${count} 条事件，已写入 ${path}`, 6000);
+            });
+          } else {
+            this.inkDebug.start();
+            new Notice('诊断已开始：请正常书写并复现断触，完成后再次运行本命令停止', 8000);
+          }
+        }
+      });
     }
 
     this.addCommand({
@@ -268,6 +289,8 @@ export default class FleurPDFPlugin extends Plugin {
     this.inkUI?.unmount();
     this.inkUI = null;
     this.inkEngine?.dispose();
+    void this.inkDebug?.stop('插件卸载');
+    this.inkDebug = null;
     void this.ocr.terminate();
     removeInkStyles();
   }
