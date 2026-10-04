@@ -12,8 +12,20 @@
 //   tesseract.js@5.1.1  dist/worker.min.js
 //   tesseract.js-core@5.1.1  tesseract-core-{simd-,}lstm.wasm.{js,wasm}
 
-import { FileSystemAdapter, requestUrl, type Plugin } from 'obsidian';
+import { FileSystemAdapter, requestUrl, type App, type PluginManifest } from 'obsidian';
 import type { Worker as TesseractWorker } from 'tesseract.js';
+
+/**
+ * 宿主插件的最小结构类型，只依赖 app / manifest / settings 三个成员。
+ * 刻意不引用 Plugin 类型名：审核规则 no-unsupported-api 把「Plugin 类型对象上的
+ * .settings 访问」判为需要 Obsidian 1.13.0（官方 Plugin.settings 是 1.13 才加入基类），
+ * 而这里的 settings 是插件自定义字段，全版本可用——改用结构类型即与该规则解耦。
+ */
+type OcrHost = {
+	app: App;
+	manifest: PluginManifest;
+	settings: { ocrLangPath: string; ocrLangs: string };
+};
 
 /** 默认语言包源（tesseract.js 官方 CDN，eng / chi_sim 皆有；纯数据文件）。 */
 export const DEFAULT_OCR_LANG_PATH = 'https://tessdata.projectnaptha.com/4.0.0';
@@ -40,7 +52,7 @@ export class OcrEngine {
 	/** 最近一次 recognize 传入的进度回调（worker logger 在创建时绑定，只能转发）。 */
 	private progressSink: ((ratio: number, status: string) => void) | null = null;
 
-	constructor(private plugin: Plugin & { settings: { ocrLangPath: string; ocrLangs: string } }) {}
+	constructor(private plugin: OcrHost) {}
 
 	/**
 	 * 识别一张图（PNG dataURL）。
@@ -122,7 +134,13 @@ export class OcrEngine {
 		if (!(adapter instanceof FileSystemAdapter)) {
 			throw new Error('当前存储适配器不支持本地 OCR 资产');
 		}
-		return adapter.getResourcePath(`${this.plugin.manifest.dir}/${rel}`);
+		// Obsidian 的 getResourcePath 自带 ?<mtime> 缓存参数；而 tesseract.js 会向目录形式的
+		// corePath 追加 core 文件名，追加发生在 query 之后，会把文件名挤进 query 导致
+		// importScripts 加载失败（"core?时间戳/xxx.wasm.js"）。引擎文件版本锁定不变，
+		// 无需缓存参数，直接剥掉。
+		return adapter
+			.getResourcePath(`${this.plugin.manifest.dir}/${rel}`)
+			.replace(/\?.*$/, '');
 	}
 
 	/**
