@@ -12,12 +12,20 @@
  *
  * Everything here degrades gracefully: if SecretStorage is missing (older
  * Obsidian) the vault backend is used instead, so no key is ever lost.
+ * Secrets are keyed by field name, so adding a key means adding one entry here
+ * and one ID below — everything else (hydration, scrubbing, migration) iterates
+ * the list.
  */
 
 import type { App } from 'obsidian';
 
-/** Settings fields that must never be persisted as plain text on the keychain backend. */
-export const SECRET_FIELDS = ['apiKey'] as const;
+/**
+ * Settings fields that must never be persisted as plain text on the keychain
+ * backend. `visionApiKey` belongs here for the same reason `apiKey` does: it is
+ * a bearer credential for a third-party endpoint, and `data.json` travels with
+ * the vault (Obsidian Sync / iCloud / OneDrive).
+ */
+export const SECRET_FIELDS = ['apiKey', 'visionApiKey'] as const;
 
 export type SecretField = typeof SECRET_FIELDS[number];
 
@@ -30,6 +38,7 @@ export type SecretBackend = 'system' | 'vault';
  */
 export const SECRET_IDS: Record<SecretField, string> = {
   apiKey: 'fleur-pdf-api-key',
+  visionApiKey: 'fleur-pdf-vision-api-key',
 };
 
 interface SecretStorageLike {

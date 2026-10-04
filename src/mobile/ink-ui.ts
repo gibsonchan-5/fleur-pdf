@@ -278,6 +278,20 @@ export class InkUI {
 
 	/* ============================ 模式切换 ============================ */
 
+	/**
+	 * 把设置里的「抬笔归并」参数推给覆盖层引擎。
+	 * 进入手写模式时推一次，设置页每次改动再推一次（改完立刻生效，不用退出重进）。
+	 * 数值合法性由引擎侧 normalizeTuning 统一夹区间，这里只管原样传。
+	 */
+	applyGraceTuning(): void {
+		const s = this.plugin.settings;
+		this.overlay.setGraceTuning({
+			enabled: s.inkGraceMerge !== false,
+			windowMs: s.inkGhostWindowMs,
+			nearPx: s.inkGhostNearPx,
+		});
+	}
+
 	async enterInk(): Promise<void> {
 		// 手写模式下选不出文本，文本批注面板留着只会挡住落笔区域
 		this.plugin.patcher?.closeFloatingMenu();
@@ -294,6 +308,7 @@ export class InkUI {
 		// 覆盖层引擎挂上 —— 输入 / 渲染 / 橡皮 / 套索全归它管。
 		// 不再需要 pdf.js 的编辑模式与 UIManager：这两层正是旧架构一切顽疾的来源。
 		this.overlay.attach(handle.viewer);
+		this.applyGraceTuning();
 		this.overlay.setTool(this.currentTool());
 		this.overlay.onChange(() => {
 			// 每次数据变化（一笔提交 / 擦除 / 移动 / 撤销）都排一次空闲落盘

@@ -266,11 +266,11 @@ npm run build
 
 1. 打开 Obsidian 设置 → FleurPDF
 2. 选择 AI 提供商（DeepSeek、OpenAI 或自定义）
-3. 输入 API Key（**仅保存在本地**）
+3. 输入 API Key（**默认保存在系统钥匙串**，可选改为随 vault 同步）
 4. 如果使用自定义端点，配置 Base URL
 5. 点击"测试连接"验证设置
 
-**安全说明**：您的 API Key 仅保存在 Obsidian 本地数据中，除调用 API 外不会离开您的设备。
+**安全说明**：主 AI 与视觉模型两把 API Key 默认存入 Obsidian 系统钥匙串（`SecretStorage`），不写入 `data.json`，因此不会随 vault 同步上传；只有在设置里显式把「密钥保存位置」改为 data.json 时，密钥才会以明文随 vault 同步。除调用你所配置的 AI / 词典端点外，插件不向任何服务器发送笔记内容，也没有任何遥测或上报。
 
 ### 批注设置
 

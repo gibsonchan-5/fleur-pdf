@@ -47,6 +47,78 @@ export interface InkStroke {
 	 * （视为 0，同步墓碑可删）。本地渲染不读它。
 	 */
 	t?: number;
+	/**
+	 * 子路径断点：数组里的下标 i 表示**点 i-1 → 点 i 之间不落墨**（渲染时 moveTo
+	 * 而非 lineTo，橡皮命中测试也跳过这一段）。升序、去重、取值 1..点数-1。
+	 *
+	 * 为什么必须有它：抬笔容错里「算同一条笔画」和「把两个落点连起来画」原本是
+	 * 同一件事 —— 归并阈值一放宽，用户有意的下一笔就被一根牵丝线接了上去
+	 * （1.7.5 的连笔顽疾）；阈值一收紧，断触立刻回来。有了断点，归并只承担
+	 * 「同一条笔画」的语义（橡皮整条擦、撤销一步退、跨端同步按一条合），
+	 * 那段画不画由数据说了算，两个顽疾就此解耦。详见 mobile/ink/grace-merge.ts。
+	 *
+	 * 缺省（旧数据、正常一笔写完）= 连续折线，渲染结果与 1.7.6 逐字节一致。
+	 */
+	gaps?: number[];
+}
+
+/** 点 i 是否是一条子路径的起点（即 i-1 → i 这段不落墨）。 */
+export function hasGapBefore(s: InkStroke, i: number): boolean {
+	const gaps = s.gaps;
+	if (!gaps || gaps.length === 0 || i < 1) return false;
+	// 一条笔画的断点是个位数，线性扫描比二分更快也更直白
+	for (let k = 0; k < gaps.length; k++) {
+		if (gaps[k] === i) return true;
+		if ((gaps[k] ?? 0) > i) return false;
+	}
+	return false;
+}
+
+/** 点 i 所在子路径的起始下标（无断点时为 0）。起笔 taper 按子路径算，不按整条算。 */
+export function subpathStartAt(s: InkStroke, i: number): number {
+	const gaps = s.gaps;
+	if (!gaps || gaps.length === 0) return 0;
+	let start = 0;
+	for (const g of gaps) {
+		if (g <= i && g > start) start = g;
+	}
+	return start;
+}
+
+/**
+ * 记一个断点（保持升序去重；越界与 0 直接忽略 —— 下标 0 本身就是子路径起点）。
+ * 允许 index 等于当前点数：那是「下一个将要落下的点」，gap 在续写落笔前先行登记。
+ * 返回是否真的新增，调用方据此决定要不要重绘。
+ */
+export function addStrokeGap(s: InkStroke, index: number): boolean {
+	const count = s.pts.length / 3;
+	if (!(index >= 1) || index > count) return false;
+	// 写时复制：撤销快照与活数据可能共享同一条 gaps 引用，原地 push 会同时改到历史
+	const gaps = s.gaps ? s.gaps.slice() : [];
+	if (gaps.some((g) => g === index)) return false;
+	gaps.push(index);
+	gaps.sort((a, b) => a - b);
+	s.gaps = gaps;
+	return true;
+}
+
+/**
+ * 读盘 / 跨端合并时的 gaps 结构校验（导出给 ink-store 的 sanitizeStrokes 用）。
+ *
+ * 只要求「别把渲染搞崩」：整数、去重、升序、且必须指向真实存在的段（1..点数-1，
+ * 下标 count 那种「登记了但点没落下」的悬空空段直接丢掉）。
+ * ⚠️ 校验失败时返回 undefined（当作没有断点）而不是丢整条笔迹 —— 少几个断点只是
+ * 多连一根线，废掉一条笔迹是丢用户的字。
+ */
+export function sanitizeGaps(raw: unknown, pointCount: number): number[] | undefined {
+	if (!Array.isArray(raw) || raw.length === 0) return undefined;
+	const clean = new Set<number>();
+	for (const g of raw) {
+		if (typeof g !== 'number' || !Number.isInteger(g)) return undefined;
+		if (g >= 1 && g < pointCount) clean.add(g);
+	}
+	if (!clean.size) return undefined;
+	return Array.from(clean).sort((a, b) => a - b);
 }
 
 /** 落盘前把坐标压到 2 位小数（PDF 单位下 0.01 ≈ 0.03px @scale3，精度远超需要）。 */

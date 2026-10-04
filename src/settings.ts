@@ -107,6 +107,20 @@ export interface FleurSettings {
   /** 橡皮擦除模式：pixel=像素擦除（切开口保留盘外线段） stroke=笔画擦除 select=选区擦除。 */
   inkEraserMode?: 'pixel' | 'stroke' | 'select';
   /**
+   * 抬笔归并判定（治小米平板「写成了连笔」，只管移动端手写批注）。
+   *
+   * true（默认）= 笔抬起后重新落下时，按抬笔前的末端速度、方向、悬停轨迹这些
+   * 现场物理证据决定「那段该不该画」：判明确连续才连线，拿不准就归并但不落墨
+   * （橡皮仍能整条擦、撤销仍是一步）。
+   * false = 完全回到 1.7.6 的行为：窗口内近端一律连线续写。
+   * 真机若因此觉得笔画容易断，关掉这一项就退回旧手感，不必重装插件。
+   */
+  inkGraceMerge?: boolean;
+  /** 幽灵抬笔归并窗口（ms，默认 150）。抬笔到重新落笔超过它一律算新笔画。 */
+  inkGhostWindowMs?: number;
+  /** 归并的近端距离上限（CSS px，默认 96）。新落点比这更远一律算新笔画。 */
+  inkGhostNearPx?: number;
+  /**
    * 悬浮切换器（编辑 / 手写 / 批注 三态胶囊）的位置与形态。
    *
    * 拖动后吸附到左或右边；y 存的是**视口比例**（0~1）而不是像素 ——
@@ -252,7 +266,7 @@ export class FleurSettingTab extends PluginSettingTab {
     new Setting(secretSection).setHeading().setName('密钥存储');
 
     secretSection.createEl('p', {
-      text: '决定 API Key 保存在哪里。切换后密钥会自动搬到新位置，不会丢失，也不需要重新填写。',
+      text: '决定 API Key 保存在哪里（主 AI 与视觉模型两把 Key 同等对待）。切换后密钥会自动搬到新位置，不会丢失，也不需要重新填写。',
       cls: 'setting-item-description',
     });
 
@@ -798,13 +812,19 @@ export class FleurSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('视觉模型 API Key')
-      .addText(text => text
-        .setPlaceholder('sk-…')
-        .setValue(this.plugin.settings.visionApiKey)
-        .onChange(async (value) => {
-          this.plugin.settings.visionApiKey = value.trim();
-          await this.plugin.saveSettings();
-        }));
+      .setDesc(this.secretDesc('视觉模型 API Key'))
+      .addText(text => {
+        text
+          .setPlaceholder('sk-…')
+          .setValue(this.plugin.settings.visionApiKey)
+          .onChange(async (value) => {
+            this.plugin.settings.visionApiKey = value.trim();
+            await this.plugin.saveSettings();
+          });
+        // 与主 API Key 一致：输入框掩码显示，避免 shoulder-surfing / 录屏泄露
+        text.inputEl.type = 'password';
+        text.inputEl.autocomplete = 'off';
+      });
 
     new Setting(containerEl)
       .setName('视觉模型名称')
@@ -849,7 +869,7 @@ export class FleurSettingTab extends PluginSettingTab {
 
   /**
    * 移动端手写批注设置（isMobileUI() 为真时才渲染）。
-   * 包含：擦除模式、悬浮胶囊显隐、逐段显隐、左侧栏图标开关。
+   * 包含：擦除模式、抬笔归并（连笔/断触）、悬浮胶囊显隐、逐段显隐、左侧栏图标开关。
    */
   private renderInkSettings(containerEl: HTMLElement): void {
     // ── 移动端手写批注 ──
@@ -870,6 +890,60 @@ export class FleurSettingTab extends PluginSettingTab {
           this.plugin.settings.inkEraserMode = value as 'pixel' | 'stroke' | 'select';
           await this.plugin.saveSettings();
         }));
+
+    // ── 抬笔归并（连笔修复）──
+    // 小米平板等笔固件会在连续书写中瞬时上报「抬笔 + 悬停 + 落笔」（实测 24-71ms）。
+    // 1.7.5 为治断触把这类瞬时抬笔接回同一笔，代价是「有意的下一笔」也被一根线接上
+    // =连笔。现在接不接由现场证据判，并留这条一键退回旧行为的路。
+    new Setting(inkSection)
+      .setName('智能抬笔归并')
+      .setDesc('修复「写着写着变成连笔」。开启后，笔抬起再落下时按运动速度、方向与悬停轨迹判断该不该把这段连上；拿不准就不连线，但仍然算同一条笔画（橡皮整条擦、撤销一步退）。关闭则回到旧行为：窗口内只要落点够近就直接连线。若开了反而觉得笔画容易断，关掉这一项即可退回旧手感。')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.inkGraceMerge !== false)
+        .onChange(async (value) => {
+          this.plugin.settings.inkGraceMerge = value;
+          await this.plugin.saveSettings();
+          this.plugin.inkUI?.applyGraceTuning();
+        }));
+
+    const graceNumber = (
+      name: string,
+      desc: string,
+      placeholder: string,
+      read: () => number | undefined,
+      write: (v: number | undefined) => void,
+    ) => {
+      new Setting(inkSection)
+        .setName(name)
+        .setDesc(desc)
+        .addText(text => text
+          .setPlaceholder(placeholder)
+          .setValue(String(read() ?? ''))
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            const n = trimmed === '' ? undefined : Number(trimmed);
+            // 空 = 用默认值；非数字 = 不改（避免把 NaN 写进 data.json）
+            if (trimmed !== '' && (!Number.isFinite(n as number) || (n as number) <= 0)) return;
+            write(n);
+            await this.plugin.saveSettings();
+            this.plugin.inkUI?.applyGraceTuning();
+          }));
+    };
+
+    graceNumber(
+      '归并窗口（毫秒）',
+      '抬笔后多久之内落笔才算同一笔。默认 150：真机实测瞬时抬笔都在 71ms 内，有意提笔都在 384ms 以上。调大会把有意笔画也并进来，调小会重新出现断触。',
+      '150',
+      () => this.plugin.settings.inkGhostWindowMs,
+      (v) => { this.plugin.settings.inkGhostWindowMs = v; },
+    );
+    graceNumber(
+      '归并距离（像素）',
+      '落笔点离上一个点多远以内才可能算同一笔。默认 96（屏幕像素，与缩放无关）。调大更容易连笔，调小更容易断。',
+      '96',
+      () => this.plugin.settings.inkGhostNearPx,
+      (v) => { this.plugin.settings.inkGhostNearPx = v; },
+    );
 
     // ── 悬浮按钮：整体显隐 ──
     // 按钮只在打开 PDF 时出现（运行期自动判定，不占这一栏）；这里管的是「即便在 PDF 里也不想看到它」。
@@ -940,12 +1014,12 @@ export class FleurSettingTab extends PluginSettingTab {
   /**
    * 描述密钥当前保存在哪里，措辞与「密钥保存位置」设置保持一致。
    */
-  private secretDesc(): string {
+  private secretDesc(label = 'API Key'): string {
     if (!this.plugin.secretStorageAvailable) {
-      return 'API Key。当前 Obsidian 版本不支持系统钥匙串，将以明文保存在 data.json。';
+      return `${label}。当前 Obsidian 版本不支持系统钥匙串，将以明文保存在 data.json。`;
     }
     return this.plugin.secretBackend === 'system'
-      ? 'API Key。已保存在系统钥匙串，不会写入 data.json，也不会随 vault 同步。'
-      : 'API Key。当前以明文保存在 data.json，会随 vault 同步到其他设备。';
+      ? `${label}。已保存在系统钥匙串，不会写入 data.json，也不会随 vault 同步。`
+      : `${label}。当前以明文保存在 data.json，会随 vault 同步到其他设备。`;
   }
 }

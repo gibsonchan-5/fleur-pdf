@@ -20,7 +20,7 @@
 //   v2 —— 0.6.0 起：自有笔迹模型（PDF 用户空间）。
 
 import { App, TFile, normalizePath } from 'obsidian';
-import { compactStroke, type InkStroke, type V1InkEntry } from './ink/strokes';
+import { compactStroke, sanitizeGaps, type InkStroke, type V1InkEntry } from './ink/strokes';
 
 /** 笔迹数据目录（vault 内相对路径）。点开头 → 不进 Obsidian 文件索引。 */
 export const INK_DATA_DIR = '.fleur-pdf/ink';
@@ -217,7 +217,7 @@ export function sanitizeStrokes(raw: unknown): InkStroke[] {
 	const out: InkStroke[] = [];
 	for (const s of raw) {
 		if (!s || typeof s !== 'object') continue;
-		const { id, page, color, width, opacity, kind, pts, t } = s as Record<string, unknown>;
+		const { id, page, color, width, opacity, kind, pts, t, gaps } = s as Record<string, unknown>;
 		if (typeof id !== 'string' || !id) continue;
 		if (typeof page !== 'number' || !(page >= 1)) continue;
 		if (typeof color !== 'string') continue;
@@ -234,6 +234,11 @@ export function sanitizeStrokes(raw: unknown): InkStroke[] {
 			kind,
 			pts: pts as number[],
 			t: typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : undefined,
+			// 断点（抬笔容错「归并但不连线」的段下标）。白名单里必须显式带上，
+			// 否则落盘 / 跨端合并会静默抹掉它 —— 表现为「牵丝线在设备上消失、
+			// 换台机器又回来」。结构不合法时 sanitizeGaps 返回 undefined（丢断点
+			// 不丢笔迹）。
+			gaps: sanitizeGaps(gaps, pts.length / 3),
 		});
 	}
 	return out;

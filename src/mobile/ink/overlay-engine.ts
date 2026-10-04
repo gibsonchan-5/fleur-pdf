@@ -32,7 +32,24 @@
 // mobile-ink 的生产做法，照用。
 
 import type { App } from 'obsidian';
-import { mintStrokeId, type InkStroke, type InkStrokeKind } from './strokes';
+import {
+	addStrokeGap,
+	hasGapBefore,
+	mintStrokeId,
+	subpathStartAt,
+	type InkStroke,
+	type InkStrokeKind,
+} from './strokes';
+import {
+	angleBetweenDeg,
+	classifyGraceMerge,
+	DEFAULT_GRACE_TUNING,
+	normalizeTuning,
+	pathLengthPx,
+	terminalMotion,
+	type GraceMergeAction,
+	type GraceMergeTuning,
+} from './grace-merge';
 
 /* ---------------------------------------------------------------------------
  * 常量
@@ -56,21 +73,20 @@ const CANCEL_GRACE_MS = 1200;
 const REBIND_NEAR_PX = 16;
 
 /**
- * 幽灵抬笔归并窗口（ms）：真机诊断（小米 2410CRP4CC / Android 16）实锤，
- * 连续书写中笔固件会瞬时上报 up + 悬停 move + down——up→down 间隔实测仅
- * 24-30ms，人类不可能完成提笔-落笔动作，用户看到的正是「断触」。笔 up 后
- * 不立即提交，进本窗口：期间近端重新落下就接回同一笔，超时才真正提交。
- * 间隔分布完美双峰：幽灵抬笔全部 ≤71ms，用户有意的笔画间提笔全部 ≥384ms，
- * 150ms 取 2 倍安全余量，两边都不误伤。
+ * 幽灵抬笔归并窗口（ms）与近端距离（CSS px）的**默认值**见
+ * grace-merge.ts 的 DEFAULT_GRACE_TUNING（150ms / 96px），可被设置项覆盖。
+ *
+ * 这两个数值的来源（真机诊断，小米 2410CRP4CC / Android 16，10,769 条事件）：
+ * 连续书写中笔固件会瞬时上报 up + 悬停 move + down，up→down 实测 24-71ms，
+ * 人类不可能在这个时间里完成提笔-落笔；用户有意的笔画间提笔全部 ≥384ms，
+ * 分布双峰干净分离，所以阈值本身不需要动。
+ *
+ * ⚠️ 1.7.6 的「连笔」顽疾不在阈值上，在**归并后画什么**：旧实现把悬停轨迹整段
+ * 丢弃，再用一根 lineTo 把最后一个墨点和最远 96px 外的新落点直连 —— 笔速越快、
+ * 固件抖在两笔交界处，这根全宽圆头的直线就越像用户写了个牵丝。现在归并只负责
+ * 「算同一条笔画」的语义，那段墨由证据决定该不该画（bridge 画真实轨迹 / gap
+ * 只分组不落墨 / commit 拆两条），判定规则与探针见 grace-merge.ts。
  */
-const GHOST_UP_GRACE_MS = 150;
-
-/**
- * 幽灵抬笔归并的「近端」判定（CSS px）：悬停期间笔继续在动，重新落下时
- * 距离实测可达 68px，远超 cancel 续写的 REBIND_NEAR_PX（黑窗期笔基本不动）。
- * 阈值取 2 倍实测余量；超时前落点比这还远就视为有意开新笔。
- */
-const GHOST_NEAR_PX = 96;
 
 /**
  * 掌先落、笔后到的判定窗口：滚动被笔接管时，若手势存活短于此值，
@@ -157,6 +173,19 @@ interface ActiveGesture {
 	strokeWidths?: number[]; // PDF 单位，与 pts 并行
 	renderedCount?: number; // 已增量画进 committed 的点数
 	lastRaw?: { x: number; y: number }; // EMA 前的原始点（PDF 空间）
+	/**
+	 * 接触期最后若干个采样点（CSS px + 时刻）。归并判定要的「抬笔前末端速度」和
+	 * 「末端方向」只能从**接触中**的点算 —— 悬停点算进去会把伪抬笔误判成连续。
+	 */
+	recentRaw?: Array<{ x: number; y: number; at: number }>;
+	/** 归并窗口：抬笔时刻（performance.now()，判定时算 dtMs 用）。 */
+	upAt?: number;
+	/** 归并窗口：窗口内收到的悬停轨迹（CSS px 作证据 + PDF 坐标备桥接落墨）。 */
+	graceHover?: Array<{ x: number; y: number; at: number; px: number; py: number }>;
+	/** 归并窗口：窗口内是否收到过 pointerout（笔确实抬出了感应区）。 */
+	leftProximity?: boolean;
+	/** 这条笔画已吸收的归并次数（封顶用，防级联成一条串起一整行）。 */
+	mergeCount?: number;
 	// erase
 	eraseChanged?: boolean;
 	// lasso
@@ -206,17 +235,22 @@ function clamp01(v: number): number {
  *
  * ⚠️ 必须**只依赖 0..i 的点**（因果）且**确定性**：live 增量与全量重绘走同一个
  * 函数，已画部分才不会在提交/重绘时变样；同一份数据在任何设备上重绘一致。
+ * ⚠️ 断点（gaps）之后是新子路径，起笔 taper 与宽度 EMA 都从新子路径的头算起 ——
+ * 否则一段桥接墨会以「中段宽度」突然接管，接头上看得到一节粗细跳变。
+ * 无断点时 subpathStartAt 恒为 0，逐字节等于旧实现。
  */
 export function strokePointWidths(s: InkStroke): number[] {
 	const n = s.pts.length / 3;
 	const out: number[] = [];
 	let prev = 0;
 	for (let i = 0; i < n; i++) {
+		const start = subpathStartAt(s, i);
+		const rel = i - start;
 		const p = clamp01(s.pts[i * 3 + 2] ?? 0.5);
 		let raw = s.width * (0.4 + 0.8 * p);
-		// 起笔 taper：头三个点渐入，避免「一顿墨点」
-		if (i < 3 && n > 3) raw *= 0.6 + 0.4 * (i / 2);
-		const w = i === 0 ? raw : 0.55 * raw + 0.45 * prev;
+		// 起笔 taper：每个子路径头三个点渐入，避免「一顿墨点」
+		if (rel < 3 && n - start > 3) raw *= 0.6 + 0.4 * (rel / 2);
+		const w = rel === 0 ? raw : 0.55 * raw + 0.45 * prev;
 		out.push(w);
 		prev = w;
 	}
@@ -237,7 +271,13 @@ function distPointToSegmentSq(
 	return (px - cx) * (px - cx) + (py - cy) * (py - cy);
 }
 
-/** 橡皮圆是否碰到这条笔画（逐线段 + 半笔宽余量）。 */
+/**
+ * 橡皮圆是否碰到这条笔画（逐线段 + 半笔宽余量）。
+ *
+ * ⚠️ 断点（gap）那一段**没有墨**，不能算命中 —— 否则擦掉一条看不见的路径，
+ * 整条笔画还会莫名其妙消失。gap 两侧的子路径各自照旧可擦。
+ * 无断点时判定路径与旧实现等价（可见段一个不少、一个不多）。
+ */
 function strokeHitsCircle(s: InkStroke, cx: number, cy: number, r: number): boolean {
 	const rr = (r + s.width / 2) * (r + s.width / 2);
 	const n = s.pts.length / 3;
@@ -246,14 +286,27 @@ function strokeHitsCircle(s: InkStroke, cx: number, cy: number, r: number): bool
 		const dy = s.pts[1] - cy;
 		return dx * dx + dy * dy <= rr;
 	}
-	for (let i = 0; i + 1 < n; i++) {
-		if (
-			distPointToSegmentSq(
-				cx, cy,
-				s.pts[i * 3], s.pts[i * 3 + 1],
-				s.pts[i * 3 + 3], s.pts[i * 3 + 4],
-			) <= rr
-		) return true;
+	// 孤立墨点测试（子路径只有一个点时它没有任何相邻可见段）
+	const dotHit = (i: number): boolean => {
+		const dx = s.pts[i * 3] - cx;
+		const dy = s.pts[i * 3 + 1] - cy;
+		return dx * dx + dy * dy <= rr;
+	};
+	if (hasGapBefore(s, 1) && dotHit(0)) return true;
+	for (let i = 1; i < n; i++) {
+		if (!hasGapBefore(s, i)) {
+			if (
+				distPointToSegmentSq(
+					cx, cy,
+					s.pts[(i - 1) * 3], s.pts[(i - 1) * 3 + 1],
+					s.pts[i * 3], s.pts[i * 3 + 1],
+				) <= rr
+			) return true;
+			continue;
+		}
+		// 段 (i-1)→i 无墨：点 i 只有在右侧也没有可见段时才需要单独测一次
+		const rightVisible = i + 1 < n && !hasGapBefore(s, i + 1);
+		if (!rightVisible && dotHit(i)) return true;
 	}
 	return false;
 }
@@ -279,6 +332,12 @@ export class InkOverlayEngine {
 	private cancelTimer: number | null = null;
 	/** 宽限来源：true=幽灵抬笔（up 后的归并窗口，近端阈值更宽），false=pointercancel。 */
 	private graceFromUp = false;
+	/**
+	 * 归并判定调参（默认值来自 grace-merge.ts，设置页可覆盖）。
+	 * 只作用于 pointerup（幽灵抬笔）通道；pointercancel 通道维持 1.7.6 的
+	 * 「近端连线续写」不动 —— 那条通道是误触修复的一部分，不碰。
+	 */
+	private grace: GraceMergeTuning = { ...DEFAULT_GRACE_TUNING };
 	/** 笔最近活动时刻（掌压拒止窗口用）。 */
 	private penActivityUntil = 0;
 	/** 进行中的笔所触发的「拒绝 touch」窗口。 */
@@ -484,6 +543,19 @@ export class InkOverlayEngine {
 		this.requestPaintAll();
 	}
 
+	/**
+	 * 覆盖归并判定参数（设置页 → InkUI 在进入手写模式时注入）。
+	 * 传 null/undefined 的字段保持原值；数值一律经 normalizeTuning 夹到安全区间，
+	 * data.json 被手改坏也不会把容错关掉或变成连线机器。
+	 */
+	setGraceTuning(patch: Partial<GraceMergeTuning> | null | undefined): void {
+		this.grace = normalizeTuning(this.grace, patch);
+	}
+
+	get graceTuning(): GraceMergeTuning {
+		return { ...this.grace };
+	}
+
 	/* ------------------------------ 撤销 / 重做 ------------------------------ */
 
 	private snapshot(): Map<number, InkStroke[]> {
@@ -491,7 +563,12 @@ export class InkOverlayEngine {
 		for (const [page, list] of this.pages) {
 			m.set(
 				page,
-				list.map((s) => ({ ...s, pts: s.pts.slice() })),
+				list.map((s) => {
+					const c = { ...s, pts: s.pts.slice() };
+					// 断点数组也必须断开引用：撤销后重做的是「同一份数据的不同断点集合」
+					if (s.gaps) c.gaps = s.gaps.slice();
+					return c;
+				}),
 			);
 		}
 		return m;
@@ -762,40 +839,96 @@ export class InkOverlayEngine {
 		if (this.active?.tool.mode === 'scroll') this.finishGesture(false);
 		this.cancelMomentum();
 
-		// 已有手势进行中 —— 断触宽限内的续写判定：
-		// 同为笔（旧指针已 cancel）→ 近端重新落下则换绑续写；远端则旧笔就地
-		// 提交、新落点开新笔（否则两笔会被连成一条横跨页面的长线）。
+		// 已有手势进行中 = 抬笔宽限期内重新落下。**两条通道语义不同，分开处理**：
+		//   · pointercancel 通道（掌压黑窗）：维持 1.7.6 的近端连线续写不动。
+		//     那条通道是误触修复的一部分，动它就是把「之前发现的误触问题」请回来。
+		//   · 幽灵抬笔通道（pointerup）：按物理证据判 bridge / gap / commit，
+		//     归并语义与「那段画不画」解耦（见 grace-merge.ts 文件头）。
 		if (this.active && this.cancelTimer !== null && this.active.stroke) {
 			const g = this.active;
 			const stroke = g.stroke!;
 			const css = this.clientToCss(g.surface, e.clientX, e.clientY);
 			const pdf = this.cssToPdf(g.surface, css.x, css.y);
 			const vp = this.viewportFor(g.surface.page);
-			// 近端判定以最后一个【原始】采样点为基准（EMA 点滞后，见 REBIND_NEAR_PX 注释）
-			const ref = g.lastRaw;
-			const cnt = stroke.pts.length / 3;
-			const lastX = ref ? ref.x : stroke.pts[(cnt - 1) * 3];
-			const lastY = ref ? ref.y : stroke.pts[(cnt - 1) * 3 + 1];
-			const near =
-				!!pdf &&
-				!!vp?.scale &&
-				Math.hypot((pdf.x - lastX) * vp.scale, (pdf.y - lastY) * vp.scale) <=
-					Math.max(
-						this.graceFromUp ? GHOST_NEAR_PX : REBIND_NEAR_PX,
-						stroke.width * vp.scale * 4,
-					);
+			// 距离一律对最后一个【原始接触点】算、且用 CSS px（阈值要与用户手感
+			// 同尺度，不能随缩放变）—— EMA 点滞后，用它算会虚增几像素把真续判成远端。
+			const ref = g.lastRaw ?? { x: stroke.pts[(stroke.pts.length / 3 - 1) * 3], y: stroke.pts[(stroke.pts.length / 3 - 1) * 3 + 1] };
+			const scale = vp?.scale ?? 0;
+			const jumpPx =
+				pdf && scale > 0 ? Math.hypot((pdf.x - ref.x) * scale, (pdf.y - ref.y) * scale) : Infinity;
+			// 笔宽下限：宽笔（marker）在 96px 内连线与不连都在墨里，按连续处理
+			const nearLimit = Math.max(
+				this.graceFromUp ? this.grace.nearPx : REBIND_NEAR_PX,
+				stroke.width * scale * 4,
+			);
+			const jumpX = css.x - (g.recentRaw?.[g.recentRaw.length - 1]?.x ?? css.x);
+			const jumpY = css.y - (g.recentRaw?.[g.recentRaw.length - 1]?.y ?? css.y);
+			const hover = g.graceHover ?? [];
+			const motion = terminalMotion(g.recentRaw ?? []);
 			window.clearTimeout(this.cancelTimer);
 			this.cancelTimer = null;
-			if (near) {
+
+			const action: GraceMergeAction = !this.graceFromUp
+				? jumpPx <= nearLimit
+					? 'bridge'
+					: 'commit'
+				: classifyGraceMerge(
+						{
+							dtMs: g.upAt !== undefined ? performance.now() - g.upAt : Infinity,
+							jumpPx,
+							hoverPathPx: pathLengthPx(hover),
+							endSpeed: motion.endSpeed,
+							turnDeg: angleBetweenDeg(motion.dirX, motion.dirY, jumpX, jumpY),
+							leftProximity: !!g.leftProximity,
+							mergeCount: g.mergeCount ?? 0,
+						},
+						{ ...this.grace, nearPx: nearLimit },
+					);
+
+			if (action === 'commit') {
+				// 有意的新笔画：旧笔就地提交，落到下面的 beginGesture 开新笔
+				this.finishGesture(true);
+			} else {
+				// 归并：换绑同一个手势，续写同一条笔画
 				g.pointerId = e.pointerId;
 				this.penActivityUntil = performance.now() + PEN_TOUCH_REJECTION_MS;
 				e.preventDefault();
 				e.stopPropagation();
+				if (this.graceFromUp) g.mergeCount = (g.mergeCount ?? 0) + 1;
+				if (action === 'bridge') {
+					if (this.grace.enabled && this.graceFromUp) {
+						// 桥接：把窗口内采到的悬停轨迹按真实路径落墨（不是把两端连直的弦），
+						// 再把新落点接上。轨迹点是悬停采样，压力取中性值 0.5，宽度与笔画
+						// 中段一致，不会拖出零压细线伪影。
+						// ⚠️ 只对**幽灵抬笔（pointerup）通道**生效。pointercancel 那条是掌压
+						// 黑窗，宽限长达 1200ms，期间悬停轨迹可能绕着纸面划一大圈，而那条
+						// 通道的近端阈值只有 16px（连线本来就落在笔宽里）—— 画轨迹是平白
+						// 新增风险，所以它维持 1.7.6：丢轨迹，只续一个新落点。
+						for (const p of hover) {
+							if (!p.px && !p.py) continue;
+							this.appendPdfPoint(g, { x: p.px, y: p.py }, { x: p.x, y: p.y }, 0.5, 'pen');
+						}
+					}
+					// 关掉总开关时的桥接 = 1.7.6 原样：悬停轨迹整段丢掉，新落点直接续在上一
+					// 个墨点后（那根全宽圆头的弦就是「连笔」本体）。必须保持一致，否则
+					// `enabled:false` 不是「退回旧行为」而是「第三种行为」，真机出问题时
+					// 这个开关就失去了意义。
+					// 两条路都清空速度证据：刚注入的悬停点不是**接触中**的运动，留在
+					// recentRaw 里会把下一次判定的末端速度虚高。
+					g.recentRaw = [];
+				} else {
+					// gap：认定很可能是有意提笔，但证据不足以拆成两条 —— 继续同一条笔画，
+					// 这一段不落墨。最坏表现等同于「笔断了」，绝不会画一根用户没写过的线。
+					addStrokeGap(stroke, stroke.pts.length / 3);
+					// 断点之后的第一段是新子路径，宽度 taper 与速度证据都要从头算
+					g.recentRaw = [];
+				}
+				g.graceHover = [];
+				g.leftProximity = false;
+				g.upAt = undefined;
 				this.appendDrawEvent(e);
 				return;
 			}
-			// 远端：旧笔正常提交，落到下面的 beginGesture 开新笔
-			this.finishGesture(true);
 		}
 
 		if (!this.active) {
@@ -819,10 +952,16 @@ export class InkOverlayEngine {
 		}
 		const g = this.active;
 		if (!g || e.pointerId !== g.pointerId) return;
-		// 归并窗口（cancel / 幽灵 up 宽限）内，旧指针的悬停 move 不上墨——
-		// 固件幽灵抬笔的 hover 轨迹若画出来会在笔画上拖出零压细线伪影；
-		// 续写由 onPointerDown 的近端重绑完成，直接从最后原始点接到新落点。
-		if (this.cancelTimer !== null) return;
+		// 归并窗口（cancel / 幽灵 up 宽限）内，旧指针的悬停 move **不上墨、只采样**。
+		// 1.7.6 在这里直接 return 把轨迹整段丢掉，然后在 onPointerDown 用一根
+		// lineTo 把最后一个墨点连到新落点 —— 那根全宽圆头的直线就是「连笔」。
+		// 现在留下轨迹：判定拿它算直度证据，判 bridge 时按真实轨迹落墨（笔在飞
+		// 的时候本来就该留下这条线），判 gap 时不落墨。
+		// 仍然不做 preventDefault / 不改写窗口，误触与滚动的语义保持原样。
+		if (this.cancelTimer !== null) {
+			this.sampleGraceHover(g, e);
+			return;
+		}
 		e.preventDefault();
 		e.stopPropagation();
 		this.penActivityUntil = performance.now() + PEN_TOUCH_REJECTION_MS;
@@ -876,21 +1015,45 @@ export class InkOverlayEngine {
 		}
 	};
 
+	/**
+	 * 归并窗口内采样悬停轨迹。一次采样 = 一次 getBoundingClientRect + 一次矩阵
+	 * 变换（输入性能红线允许的量），不做 DOM 写入、不 preventDefault。
+	 *
+	 * 同时存 CSS 坐标（判定的距离尺度，与用户手感一致、不随缩放变）和 PDF 坐标
+	 * （判 bridge 时按**真实路径**落墨，而不是把两端连成一根弦 —— 那根弦就是连笔）。
+	 * 上限 24 点：窗口最长 400ms，再多对直度判定没有增量信息，丢最早的。
+	 */
+	private sampleGraceHover(g: ActiveGesture, e: PointerEvent): void {
+		if (!g.stroke) return;
+		const css = this.clientToCss(g.surface, e.clientX, e.clientY);
+		const arr = g.graceHover ?? (g.graceHover = []);
+		const prev = arr[arr.length - 1];
+		// 几乎重合的重复样本不记（省内存；直度判定靠离散点，不靠密度）
+		if (prev && arr.length > 1 && Math.hypot(css.x - prev.x, css.y - prev.y) < 0.5) return;
+		const at = performance.now();
+		const pdf = this.cssToPdf(g.surface, css.x, css.y);
+		arr.push({ x: css.x, y: css.y, at, px: pdf?.x ?? 0, py: pdf?.y ?? 0 });
+		if (arr.length > 24) arr.shift();
+	}
+
 	private onPointerUp = (e: PointerEvent): void => {
 		const g = this.active;
 		if (!g || e.pointerId !== g.pointerId) return;
 		e.preventDefault();
 		e.stopPropagation();
-		// 幽灵抬笔容错（见 GHOST_UP_GRACE_MS 注释）：up 后不立即提交，进短归并
-		// 窗口——期间近端重新落下（onPointerDown 续写分支）就接回同一笔；
-		// 超时或远端落笔才真正提交。擦除/套索/截图/滚动无此问题，照旧即时结束。
+		// 幽灵抬笔容错（见文件头 DEFAULT_GRACE_TUNING 注释）：up 后不立即提交，进短归并
+		// 窗口——期间重新落下由 onPointerDown 按证据判 bridge / gap / commit；
+		// 超时才真正提交。擦除/套索/截图/滚动无此问题，照旧即时结束。
 		if (g.stroke) {
 			this.graceFromUp = true;
+			g.upAt = performance.now();
+			g.graceHover = [];
+			g.leftProximity = false;
 			if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
 			this.cancelTimer = window.setTimeout(() => {
 				this.cancelTimer = null;
 				this.finishGesture(true);
-			}, GHOST_UP_GRACE_MS);
+			}, this.grace.windowMs);
 			return;
 		}
 		this.finishGesture(true);
@@ -904,6 +1067,10 @@ export class InkOverlayEngine {
 		// 就续写；宽限到点才提交。体验上等于「笔没断」。
 		if (g.stroke) {
 			this.graceFromUp = false;
+			// 宽限状态归零复用（本通道仍走 1.7.6 的近端连线判定，不看这些证据）
+			g.upAt = performance.now();
+			g.graceHover = [];
+			g.leftProximity = false;
 			if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
 			this.cancelTimer = window.setTimeout(() => {
 				this.cancelTimer = null;
@@ -997,6 +1164,12 @@ export class InkOverlayEngine {
 	 */
 	private onPointerOut = (e: PointerEvent): void => {
 		if (e.pointerType !== 'pen') return;
+		// 归并窗口内的 pointerout 是「笔确实抬出了感应区」的证据（有意提笔的典型特征）。
+		// ⚠️ 只记录，不改 penActivityUntil —— 下面那句 early return 及拒掌窗口的
+		// 收缩规则一字未动，误触修复的语义保持原样。
+		if (this.active && this.cancelTimer !== null && this.graceFromUp) {
+			this.active.leftProximity = true;
+		}
 		// 笔势进行中不收缩（断触宽限期依赖窗口语义，别搅局）
 		if (this.active && this.active.tool.mode !== 'scroll') return;
 		const until = performance.now() + PEN_OUT_WINDOW_MS;
@@ -1081,6 +1254,9 @@ export class InkOverlayEngine {
 		const pdf = this.cssToPdf(sf, css.x, css.y);
 		if (!pdf) return;
 		g.lastRaw = pdf;
+		// 速度证据的起点（terminalMotion 要 ≥2 个采样才算得出末端速度）
+		g.recentRaw = [{ x: css.x, y: css.y, at: performance.now() }];
+		g.mergeCount = 0;
 
 		if (tool.mode === 'pen') {
 			// 鼠标无压感：取 0.75 使宽度因子恰为 1.0×设定值
@@ -1276,12 +1452,33 @@ export class InkOverlayEngine {
 		rawPressure: number,
 		pointerType: string,
 	): void {
+		const css = this.clientToCss(g.surface, clientX, clientY);
+		const pdf = this.cssToPdf(g.surface, css.x, css.y);
+		if (!pdf) return;
+		this.appendPdfPoint(g, pdf, css, rawPressure, pointerType);
+	}
+
+	/**
+	 * 落墨入口（PDF 坐标版）。桥接悬停轨迹走这里 —— 悬停采样本来就把 PDF 坐标
+	 * 存着了，不必再经 client 反算一次（窗口内页面若有任何位移，反算会把轨迹画歪）。
+	 */
+	private appendPdfPoint(
+		g: ActiveGesture,
+		pdf: { x: number; y: number },
+		css: { x: number; y: number },
+		rawPressure: number,
+		pointerType: string,
+	): void {
 		const stroke = g.stroke!;
 		const sf = g.surface;
-		const css = this.clientToCss(sf, clientX, clientY);
-		const pdf = this.cssToPdf(sf, css.x, css.y);
-		if (!pdf) return;
 		g.lastRaw = pdf; // 断触续写的近端判定基准（原始点，非 EMA 点）
+
+		// 速度证据：每一个**到达**的点都记时间戳，包含下面被去重丢掉的 ——
+		// 「抬笔前是否已停住」这件事只能从位移上判，停住的笔必须在采样流里
+		// 留下「没动」的痕迹，terminalMotion 才读得出低末端速度。
+		const raw = g.recentRaw ?? (g.recentRaw = []);
+		raw.push({ x: css.x, y: css.y, at: performance.now() });
+		if (raw.length > 16) raw.shift();
 
 		const n = stroke.pts.length / 3;
 		// 防重复点：与上一点几乎重合就丢弃（数字笔偶尔会连发同位置事件）
@@ -1315,6 +1512,44 @@ export class InkOverlayEngine {
 		}
 	}
 
+	/** 画一个墨点（子路径只有一个点、或断点端头的补点）。 */
+	private paintDot(
+		ctx: CanvasRenderingContext2D,
+		sf: Surface,
+		s: InkStroke,
+		widths: number[],
+		i: number,
+		scale: number,
+	): void {
+		const p = this.pdfToCss(sf, s.pts[i * 3], s.pts[i * 3 + 1]);
+		if (!p) return;
+		ctx.fillStyle = s.color;
+		ctx.beginPath();
+		ctx.arc(p.x, p.y, Math.max(0.5, ((widths[i] ?? s.width) * scale) / 2), 0, Math.PI * 2);
+		ctx.fill();
+	}
+
+	/**
+	 * 断点处的补墨：gap 段不画线，但断点两侧都是真实落笔、笔尖在那里停过，
+	 * 必须留下墨 —— 否则「点一下就什么都不显示」。
+	 *
+	 * 规则只与 gaps 和下标有关、与当前点数无关，实时增量与全量重绘才画得出
+	 * 同一个结果。补的墨正好落在可见段端头的圆头里（起笔 taper 让头一点比
+	 * 相邻段更细），不会凸出笔形。
+	 */
+	private paintGapDots(
+		ctx: CanvasRenderingContext2D,
+		sf: Surface,
+		s: InkStroke,
+		widths: number[],
+		i: number,
+		scale: number,
+	): void {
+		if (!hasGapBefore(s, i)) return;
+		this.paintDot(ctx, sf, s, widths, i, scale);
+		if (i === 1) this.paintDot(ctx, sf, s, widths, 0, scale);
+	}
+
 	/** 把笔画从 renderedCount 起的新增线段画进 committed 层。 */
 	private renderLiveIncrement(g: ActiveGesture): void {
 		const stroke = g.stroke!;
@@ -1332,6 +1567,11 @@ export class InkOverlayEngine {
 		ctx.lineCap = 'round';
 		ctx.lineJoin = 'round';
 		for (let i = Math.max(1, from); i < n; i++) {
+			// 断点段不落墨（gap = 归并但不连线），与 paintStroke 用同一条规则
+			if (hasGapBefore(stroke, i)) {
+				this.paintGapDots(ctx, sf, stroke, widths, i, scale);
+				continue;
+			}
 			const a = this.pdfToCss(sf, stroke.pts[(i - 1) * 3], stroke.pts[(i - 1) * 3 + 1]);
 			const b = this.pdfToCss(sf, stroke.pts[i * 3], stroke.pts[i * 3 + 1]);
 			if (!a || !b) continue;
@@ -1362,7 +1602,13 @@ export class InkOverlayEngine {
 		this.paintMarkerPath(ctx, sf, stroke);
 	}
 
-	/** 荧光笔的单 path 描边（draft 预览与提交共用，保证零 snap）。 */
+	/**
+	 * 荧光笔的单 path 描边（draft 预览与提交共用，保证零 snap）。
+	 *
+	 * ⚠️ 断点（gap）把一条笔画切成若干**子路径**，每个子路径各自 beginPath→stroke：
+	 * 段间不落墨，才不会在归并处拖出一条荧光带。无断点时只跑一个子路径，
+	 * 与旧实现逐点一致。
+	 */
 	private paintMarkerPath(ctx: CanvasRenderingContext2D, sf: Surface, stroke: InkStroke): void {
 		const vp = this.viewportFor(sf.page);
 		if (!vp) return;
@@ -1374,23 +1620,30 @@ export class InkOverlayEngine {
 		ctx.lineWidth = Math.max(1, stroke.width * vp.scale);
 		ctx.lineCap = 'round';
 		ctx.lineJoin = 'round';
-		const p0 = this.pdfToCss(sf, stroke.pts[0], stroke.pts[1]);
-		if (!p0) return;
-		if (n === 1) {
-			ctx.beginPath();
-			ctx.arc(p0.x, p0.y, ctx.lineWidth / 2, 0, Math.PI * 2);
-			ctx.fillStyle = stroke.color;
-			ctx.fill();
-		} else {
+		ctx.fillStyle = stroke.color;
+		// 逐个可见子路径：起点 = 上一个断点，终点 = 下一个断点前一点
+		for (let start = 0; start < n; start++) {
+			if (start > 0 && !hasGapBefore(stroke, start)) continue;
+			let end = start;
+			while (end + 1 < n && !hasGapBefore(stroke, end + 1)) end += 1;
+			const p0 = this.pdfToCss(sf, stroke.pts[start * 3], stroke.pts[start * 3 + 1]);
+			if (!p0) continue;
+			if (end === start) {
+				// 孤子路径只有一个点：画墨点
+				ctx.beginPath();
+				ctx.arc(p0.x, p0.y, ctx.lineWidth / 2, 0, Math.PI * 2);
+				ctx.fill();
+				continue;
+			}
 			ctx.beginPath();
 			ctx.moveTo(p0.x, p0.y);
 			// 中点二次贝塞尔：过每个采样点的中点，控制点取原采样点
-			for (let i = 1; i < n - 1; i++) {
+			for (let i = start + 1; i < end; i++) {
 				const c = this.pdfToCss(sf, stroke.pts[i * 3], stroke.pts[i * 3 + 1])!;
 				const nx = this.pdfToCss(sf, stroke.pts[(i + 1) * 3], stroke.pts[(i + 1) * 3 + 1])!;
 				ctx.quadraticCurveTo(c.x, c.y, (c.x + nx.x) / 2, (c.y + nx.y) / 2);
 			}
-			const last = this.pdfToCss(sf, stroke.pts[(n - 1) * 3], stroke.pts[(n - 1) * 3 + 1])!;
+			const last = this.pdfToCss(sf, stroke.pts[end * 3], stroke.pts[end * 3 + 1])!;
 			ctx.lineTo(last.x, last.y);
 			ctx.stroke();
 		}
@@ -1609,6 +1862,11 @@ export class InkOverlayEngine {
 			}
 		} else {
 			for (let i = 1; i < n; i++) {
+				// 与 renderLiveIncrement 同规则：断点段不落墨，重绘与实时增量结果一致
+				if (hasGapBefore(s, i)) {
+					this.paintGapDots(ctx, sf, s, widths, i, scale);
+					continue;
+				}
 				const a = this.pdfToCss(sf, s.pts[(i - 1) * 3], s.pts[(i - 1) * 3 + 1]);
 				const b = this.pdfToCss(sf, s.pts[i * 3], s.pts[i * 3 + 1]);
 				if (!a || !b) continue;

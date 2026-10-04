@@ -5,19 +5,31 @@ All are licensed under the **Apache License, Version 2.0** (reproduced below).
 
 | Component | Purpose | License | Source |
 | --- | --- | --- | --- |
-| tesseract.js (v5.x) | Local OCR main-thread library (bundled at build time) | Apache-2.0 | https://github.com/naptha/tesseract.js |
-| tesseract.js-core (v5.x) | WASM inference kernel, shipped as local assets under `tesseract/core/` | Apache-2.0 | https://github.com/naptha/tesseract.js-core |
+| tesseract.js (v5.x) | Local OCR main-thread library (bundled into `main.js` at build time) | Apache-2.0 | https://github.com/naptha/tesseract.js |
+| tesseract.js-core (v5.x) | WASM inference kernel. **Not shipped in the release package** — fetched on demand, version-pinned, see below | Apache-2.0 | https://github.com/naptha/tesseract.js-core |
 | tessdata / tessdata_fast | OCR language data (`chi_sim`, `eng`), downloaded on first use from a user-configured source and cached locally | Apache-2.0 | https://github.com/tesseract-ocr/tessdata |
 
 ## Privacy & network behaviour
 
-- The worker script and WASM kernels are **shipped with the plugin** — no remote code is loaded at runtime.
-- Language data files (`.traineddata.gz`) are plain data. They are downloaded **once** from the
-  source configured in the plugin settings (default: `https://tessdata.projectnaptha.com/4.0.0`)
-  and cached in IndexedDB for offline use.
-- OCR inference runs **entirely on the local machine**. Screenshots and recognized text are not
-  uploaded anywhere by the OCR feature. The optional "vision model" channel sends the screenshot
-  to the endpoint the user explicitly configures in the plugin settings.
+- Local OCR is **off by default**. Nothing is fetched until the user turns on
+  "启用本地 OCR" (Settings → Screenshot & OCR) and then uses the feature.
+- On that first use, the OCR worker script and the WASM kernels
+  (`tesseract.js@5.1.1` / `tesseract.js-core@5.1.1`, pinned constants in
+  `src/mobile/ocr.ts`) are downloaded from `https://cdn.jsdelivr.net/npm/…`
+  and written into the plugin's own folder, where they are cached; every later
+  run loads them from local disk. The download is triggered solely by the user's
+  explicit opt-in, and the versions are fixed in source so no unpinned or
+  floating code is ever pulled.
+- Language data files (`.traineddata.gz`) are plain data, not code. They are
+  downloaded **once** from the source configured in the plugin settings
+  (default: `https://tessdata.projectnaptha.com/4.0.0`) and cached for offline use.
+- OCR inference runs **entirely on the local machine**. Screenshots and recognized
+  text are not uploaded anywhere by the OCR feature. The optional "vision model"
+  channel sends the screenshot to the endpoint the user explicitly configures in
+  the plugin settings.
+- API keys are stored in the system keychain via Obsidian's `SecretStorage` API by
+  default, and are only written to `data.json` if the user switches the storage
+  location to "data.json" in the settings.
 
 ## Apache License, Version 2.0
 
