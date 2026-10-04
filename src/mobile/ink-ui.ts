@@ -498,7 +498,8 @@ export class InkUI {
 			const json = JSON.stringify(finalStrokes);
 			if (json === this.lastSavedJson) {
 				this.lastStrokes = finalStrokes;
-				if (!silent) new Notice('当前没有需要保存的手写批注');
+				// 无变化 → 静默返回。此路径在每次切换模式 / 点侧边栏（exitInk）都会
+				// 走到，弹提示纯属打扰；真正落盘时下方已有「已保存（N 条）」反馈。
 				return false;
 			}
 
