@@ -17,6 +17,7 @@ import type { InkEngine, PenSpec } from './ink-engine';
 import { InkOverlayEngine, type InkTool } from './ink/overlay-engine';
 import { v1EntryToStroke, type InkStroke } from './ink/strokes';
 import { InkStore } from './ink-store';
+import { openSnapResult } from './snap-result';
 
 /**
  * 首版四笔。钢笔与荧光笔同走墨迹通道；荧光笔的半透明感来自 opacity 0.45
@@ -110,6 +111,14 @@ export class InkUI {
 	 * 用户擦掉的笔迹会在下次进入时从 PDF 原件里复活。
 	 */
 	private claimedIds = new Set<string>();
+
+	/** 局部截图模式（相机按钮）：开启后引擎工具切到 snap，完成后自动退出。 */
+	private snapMode = false;
+	/**
+	 * 本端删除墓碑（笔迹 id → 删除时刻 ms），随每次落盘写回 sidecar。
+	 * 跨设备同步开启时用于「删过就别复活」；撤销恢复 / 重加同 id 笔迹时撤销墓碑。
+	 */
+	private deleted: Record<string, number> = {};
 	/** 空闲自动落盘的防抖计时器（见 autoSave）。 */
 	private autoSaveTimer: number | null = null;
 	/** 落盘互斥：避免自动落盘与显式保存叠加。 */
@@ -290,6 +299,7 @@ export class InkUI {
 			// 每次数据变化（一笔提交 / 擦除 / 移动 / 撤销）都排一次空闲落盘
 			this.scheduleAutoSave();
 		});
+		this.overlay.onSnap((page, rect) => void this.handleSnap(page, rect));
 
 		this.active = true;
 		document.body.addClass('fleur-pdf-ink-active');
@@ -320,13 +330,15 @@ export class InkUI {
 		this.lastStrokes = null;
 
 		let strokes: InkStroke[] = [];
-		const claimed = new Set<string>();
+		let claimed = new Set<string>();
+		let deleted: Record<string, number> = {};
 
 		try {
 			const loaded = await this.inkStore.load(file);
 			if (loaded?.kind === 'v2') {
 				strokes = loaded.strokes;
 				for (const id of loaded.claimedIds) claimed.add(id);
+				deleted = loaded.deleted;
 			} else if (loaded?.kind === 'v1') {
 				// v1 迁移：按「页 + 页内序号」的归一化坐标 × 页框 = PDF 用户空间
 				for (const id of loaded.legacy.claimedIds ?? []) claimed.add(id);
@@ -362,7 +374,26 @@ export class InkUI {
 			console.warn('[FleurPDF Ink] 接管固有笔迹失败（下一轮重试）:', err);
 		}
 
+		// ── 跨设备同步（inkCrossDeviceSync 开启时）：进入手写模式即 pull-merge ──
+		// 移动端写的笔迹经 vault 内 FleurPDF/data/ink/ 非隐藏副本到达本端；
+		// 对端的删除经墓碑生效（比笔迹时刻晚才删）。合并结果即本会话起点。
+		if (this.plugin.settings.inkCrossDeviceSync && this.plugin.inkSync) {
+			try {
+				const merged = await this.plugin.inkSync.merge(file, {
+					strokes,
+					claimedIds: claimed,
+					deleted,
+				});
+				strokes = merged.strokes;
+				claimed = new Set(merged.claimedIds);
+				deleted = merged.deleted;
+			} catch (err) {
+				console.warn('[FleurPDF Ink] 跨设备同步合并失败（不影响本地笔迹）:', err);
+			}
+		}
+
 		this.claimedIds = claimed;
+		this.deleted = deleted;
 		this.overlay.hideInherentInk(claimed);
 		this.overlay.loadStrokes(strokes);
 		this.lastSavedJson = JSON.stringify(strokes);
@@ -390,6 +421,12 @@ export class InkUI {
 	private async save(): Promise<void> {
 		this.cancelAutoSave();
 		await this.autoSave(false);
+	}
+
+	/** 供设置页调用：开启跨设备同步后立即合并一次（未在手写模式时静默跳过，下次进入自然同步）。 */
+	async syncNow(): Promise<void> {
+		if (!this.plugin.settings.inkCrossDeviceSync) return;
+		if (this.active && this.engine.isReady) await this.autoSave(true);
 	}
 
 	/* ============================ 自动落盘 ============================ */
@@ -425,17 +462,50 @@ export class InkUI {
 
 			// getStrokes 会先把进行中的手势提交掉 —— 最后一笔不丢
 			const strokes = this.overlay.getStrokes();
-			const json = JSON.stringify(strokes);
+
+			// ── 删除墓碑增量（相对上次快照的 id 集合 diff）──
+			const curIds = new Set(strokes.map((s) => s.id));
+			// 消失的 id → 立墓碑（同步开启时阻止对端复活；本地也留档）
+			if (this.lastStrokes) {
+				const now = Date.now();
+				for (const s of this.lastStrokes) {
+					if (!curIds.has(s.id) && !this.deleted[s.id]) this.deleted[s.id] = now;
+				}
+			}
+			// 重新出现的 id（撤销恢复 / 重画同 id）→ 撤墓碑
+			for (const id of curIds) delete this.deleted[id];
+
+			// ── 跨设备同步：read-merge-write（对端新增收编进画布，对端删除生效）──
+			let finalStrokes = strokes;
+			if (this.plugin.settings.inkCrossDeviceSync && this.plugin.inkSync) {
+				const merged = await this.plugin.inkSync.merge(file, {
+					strokes,
+					claimedIds: this.claimedIds,
+					deleted: this.deleted,
+				});
+				this.deleted = merged.deleted;
+				this.claimedIds = new Set(merged.claimedIds);
+				if (merged.changed) {
+					finalStrokes = merged.strokes;
+					// 会话中途应用对端增量：不清撤销栈，只增删差异部分
+					const localIds = new Set(strokes.map((s) => s.id));
+					const mergedIds = new Set(finalStrokes.map((s) => s.id));
+					this.overlay.addStrokes(finalStrokes.filter((s) => !localIds.has(s.id)));
+					this.overlay.removeStrokes(new Set([...localIds].filter((id) => !mergedIds.has(id))));
+				}
+			}
+
+			const json = JSON.stringify(finalStrokes);
 			if (json === this.lastSavedJson) {
-				this.lastStrokes = strokes;
+				this.lastStrokes = finalStrokes;
 				if (!silent) new Notice('当前没有需要保存的手写批注');
 				return false;
 			}
 
-			await this.inkStore.save(file, strokes, Array.from(this.claimedIds));
+			await this.inkStore.save(file, finalStrokes, Array.from(this.claimedIds), this.deleted);
 			this.lastSavedJson = json;
-			this.lastStrokes = strokes;
-			if (!silent) new Notice(`已保存手写批注（${strokes.length} 条）`);
+			this.lastStrokes = finalStrokes;
+			if (!silent) new Notice(`已保存手写批注（${finalStrokes.length} 条）`);
 			return true;
 		} catch (err) {
 			if (!silent || !this.saveErrorNotified) {
@@ -496,7 +566,23 @@ export class InkUI {
 			const file = this.engine.getFile();
 			if (!file) return;
 			this.lastFile = file;
-			this.lastStrokes = this.overlay.getStrokes();
+			const strokes = this.overlay.getStrokes();
+
+			// ── 墓碑增量必须在这里（数据变化的那一刻）diff，不能等 autoSave ──
+			// captureSnapshot 会把 lastStrokes 刷新成本次状态；若 diff 留到防抖的
+			// autoSave 里做，基准已被抢先更新，「消失的 id」永远 diff 不出来，
+			// 墓碑立不起来 → 跨设备合并时被同步文件里的旧笔迹复活（实测踩坑）。
+			const curIds = new Set(strokes.map((s) => s.id));
+			if (this.lastStrokes) {
+				const now = Date.now();
+				for (const s of this.lastStrokes) {
+					if (!curIds.has(s.id) && !this.deleted[s.id]) this.deleted[s.id] = now;
+				}
+			}
+			// 重新出现的 id（撤销恢复 / 重画同 id）→ 撤墓碑
+			for (const id of curIds) delete this.deleted[id];
+
+			this.lastStrokes = strokes;
 		} catch {
 			/* 快照失败只是少一层保险，不打断书写 */
 		}
@@ -513,7 +599,7 @@ export class InkUI {
 		const json = JSON.stringify(strokes);
 		if (json === this.lastSavedJson) return false;
 		try {
-			await this.inkStore.save(file, strokes, Array.from(this.claimedIds));
+			await this.inkStore.save(file, strokes, Array.from(this.claimedIds), this.deleted);
 			this.lastSavedJson = json;
 			console.log(`[FleurPDF Ink] 视图已销毁，已用内存快照补存 ${strokes.length} 条笔迹`);
 			return true;
@@ -559,12 +645,28 @@ export class InkUI {
 	/** 当前笔（含擦除模式的选区映射）下发给引擎。 */
 	private applyTool(): void {
 		if (!this.active) return;
-		this.overlay.setTool(this.currentTool());
+		// 截图模式优先：相机是临时工具，不占用 pens 槽位
+		this.overlay.setTool(this.snapMode ? { mode: 'snap' } : this.currentTool());
+	}
+
+	/** 截图完成：渲染 + 打开结果面板，随后自动退出截图模式。 */
+	private async handleSnap(page: number, rect: { x0: number; y0: number; x1: number; y1: number }): Promise<void> {
+		// 先退出截图模式（回到之前的笔），再开面板 —— 面板打开时手已释放
+		this.snapMode = false;
+		this.applyTool();
+		this.refreshPenBar();
+		const viewer = this.overlay.getPdfViewer();
+		if (!viewer) {
+			new Notice('截图失败：无法访问 PDF 视图');
+			return;
+		}
+		await openSnapResult(this.plugin, viewer, page, rect);
 	}
 
 	private async selectPen(i: number): Promise<void> {
 		// 记录「点的就是当前已选中的那支」——橡皮要靠它判断是否展开设置弹层
 		const wasSame = this.penIndex === i;
+		this.snapMode = false; // 选笔即退出截图模式
 		this.penIndex = i;
 		this.applyTool();
 		this.persist();
@@ -631,11 +733,23 @@ export class InkUI {
 			const btn = penGroup.createDiv('fleur-pdf-ink-btn');
 			setIcon(btn, PEN_ICON[pen.kind]);
 			btn.setAttribute('aria-label', PEN_LABEL[pen.kind]);
-			if (i === this.penIndex) btn.addClass('is-active');
+			if (i === this.penIndex && !this.snapMode) btn.addClass('is-active');
 			btn.addEventListener('click', (e) => {
 				e.stopPropagation();
 				void this.selectPen(i);
 			});
+		});
+
+		// ── 局部截图（相机）：临时工具，框选后自动回到当前笔 ──
+		const snapBtn = penGroup.createDiv('fleur-pdf-ink-btn');
+		setIcon(snapBtn, 'camera');
+		snapBtn.setAttribute('aria-label', '局部截图（框选区域，可 OCR / 问 AI）');
+		if (this.snapMode) snapBtn.addClass('is-active');
+		snapBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.snapMode = !this.snapMode;
+			this.applyTool();
+			this.refreshPenBar();
 		});
 
 		// ── 颜色 ──
@@ -1029,7 +1143,12 @@ export class InkUI {
 				transform: 'none',
 			});
 			try {
-				(sw as HTMLElement).setPointerCapture(e.pointerId);
+				// ⚠️ 只有触摸在 pointerdown 立即捕获。鼠标绝不能在这里捕获：
+				// Chromium 会把后续 click 重定向到 pointerdown/pointerup 目标的公共祖先
+				// （即容器 sw），胶囊三段的 click 永远不触发 —— 桌面端表现就是
+				// 「点手写无反应」（真机触摸的 click 仍落在原始命中元素，不受影响，
+				// 已用 Playwright 双端对照实验实锤）。鼠标改为拖动真正开始时再捕获。
+				if (e.pointerType !== 'mouse') (sw as HTMLElement).setPointerCapture(e.pointerId);
 			} catch {
 				/* 某些 WebView 对已释放指针抛错，忽略 */
 			}
@@ -1052,6 +1171,15 @@ export class InkUI {
 				moved = true;
 				clearLongPress();
 				sw.addClass('is-dragging');
+				// 鼠标的捕获推迟到此刻：拖动意图确立后才接管后续指针事件。
+				// 触摸靠隐式捕获不丢 move，无需此处补捕获。
+				if (e.pointerType === 'mouse') {
+					try {
+						(sw as HTMLElement).setPointerCapture(e.pointerId);
+					} catch {
+						/* 忽略 */
+					}
+				}
 			}
 			sw.setCssStyles({ left: `${originLeft + dx}px`, top: `${originTop + dy}px` });
 		});

@@ -41,6 +41,12 @@ export interface InkStroke {
 	opacity: number;
 	kind: InkStrokeKind;
 	pts: number[];
+	/**
+	 * 笔迹时刻（Unix 毫秒）：落笔提交时生成，套索移动时更新。
+	 * 仅跨设备同步合并用（墓碑 vs 笔迹的先后判定），旧数据 / 接管的固有注释无此字段
+	 * （视为 0，同步墓碑可删）。本地渲染不读它。
+	 */
+	t?: number;
 }
 
 /** 落盘前把坐标压到 2 位小数（PDF 单位下 0.01 ≈ 0.03px @scale3，精度远超需要）。 */

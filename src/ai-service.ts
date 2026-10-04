@@ -69,22 +69,33 @@ export class AIService {
   constructor(private plugin: FleurPDFPlugin) {}
 
   async streamChat(
-    messages: Array<{ role: string; content: string }>,
+    messages: Array<{ role: string; content: unknown }>,
     onChunk: (content: string) => void,
     onDone?: () => void,
     onError?: (error: string) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    /** vision=true 时改走视觉端点（未配置则回退主端点；两者皆缺给明确提示）。 */
+    opts?: { vision?: boolean }
   ): Promise<void> {
-    const { apiKey, baseUrl, model, temperature } = this.plugin.settings;
+    const s = this.plugin.settings;
+    const vision = opts?.vision === true;
+    const apiKey = vision && s.visionApiKey ? s.visionApiKey : s.apiKey;
+    const baseUrl = vision && s.visionBaseUrl ? s.visionBaseUrl : s.baseUrl;
+    const model = vision && s.visionModel ? s.visionModel : s.model;
+    const temperature = s.temperature;
 
     if (!apiKey) {
-      onError?.('请先在设置中配置 API Key');
+      onError?.('请先在设置中配置 API Key（视觉模型可用设置 → 截图与 OCR 的独立配置）');
       return;
     }
 
     const endpoint = resolveChatEndpoint(baseUrl);
     if (!endpoint) {
-      onError?.('请先在设置中填写 Base URL（例如 https://api.deepseek.com/v1）');
+      onError?.(
+        vision
+          ? '请先在设置 → 截图与 OCR 中填写视觉模型 Base URL（例如 https://open.bigmodel.cn/api/paas/v4）'
+          : '请先在设置中填写 Base URL（例如 https://api.deepseek.com/v1）'
+      );
       return;
     }
 

@@ -1066,6 +1066,13 @@ body.fleur-pdf-mobile .fleur-underline-wavy {
   margin: 0 2px;
 }
 
+/* 移动端形态菜单的强制换行分隔（flex-basis 100% 占满一行、零视觉高度）：
+   行一 = 三个高亮色点 + 直线，行二 = 复制 / 批注 / 询问AI / 译 —— 上四下四对称。 */
+.fleur-context-rowbreak {
+  flex-basis: 100%;
+  height: 0;
+}
+
 .fleur-context-group {
   display: flex;
   gap: 3px;
@@ -1816,19 +1823,27 @@ body.fleur-pdf-mobile .fleur-pdf-ink-eraser-pop .fleur-pdf-ink-modes {
    并给容器加横向滚动兜住小屏（按钮变多时不会溢出屏幕）。 */
 body.fleur-pdf-mobile .fleur-context-panel {
   box-sizing: border-box;
-  gap: 2px;
+  /* 两行 4+4 网格：第 1 列是拖拽把手（跨两行），第 2–5 列上下对齐 ——
+     行一（三色点 + 直线）与行二（复制/批注/询问AI/译）逐列对齐。
+     旧 flex-wrap 方案里两行各自居中、宽度不等，列永远对不齐。 */
+  display: grid;
+  grid-template-columns: 16px repeat(4, 32px);
+  gap: 3px 2px;
   padding: 4px;
   border-radius: 10px;
-  /* 0.6.0 真机反馈：单行 ~350px 在窄屏/分屏下左右图标被截断（overflow-x 滚动
-     也只是把截断变成「要滑动才能看到」）。改为两行自动换行 + 收窄上限，
-     所有图标一次可见。9 个 32px 按钮按 5+4 分两行 ≈ 176px 宽。
-     0.6.3 加左端拖拽把手（16px），上限随之放宽。 */
-  max-width: 204px;
-  flex-wrap: wrap;
   justify-content: center;
-  row-gap: 3px;
 }
-/* 两行布局下竖分隔线的语义消失（不再承担「分组」的视觉职责），隐藏 */
+/* 把手占第 1 列、跨两行拉伸，右侧四个内容列与下一行逐列对齐 */
+body.fleur-pdf-mobile .fleur-context-grip {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+/* 色点分组容器不参与网格布局，让三个点直接落进第 2–4 列 */
+body.fleur-pdf-mobile .fleur-context-group {
+  display: contents;
+}
+/* 网格下 flex 换行 hack 与竖分隔线都不再需要 */
+body.fleur-pdf-mobile .fleur-context-rowbreak,
 body.fleur-pdf-mobile .fleur-context-sep {
   display: none;
 }
@@ -3589,3 +3604,504 @@ body.theme-dark :is(#highlightParamsToolbarContainer #editorHighlightVisibility)
 }
 
 /* ===== end Fleur ink editor styles ===== */
+
+/* ── 内置独立查词弹窗（FleurDict 不在场时的降级路径；移植自 fleur-epub）──────
+   交互与观感对齐 FleurDict 查词窗：整窗拖拽、右下角缩放、位置/尺寸记忆、
+   音标列（英/美 badge + IPA + 发音）、词性分组编号释义、AI 详解 + 生词本。
+   样式完全自包含（fleur-pdf-dict-* 前缀），颜色走 Obsidian 变量适配明暗。 */
+.fleur-pdf-dict-overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 9990;
+	background: transparent;
+}
+.fleur-pdf-dict-popup {
+	position: fixed;
+	z-index: 10000;
+	width: 340px;
+	min-width: 290px;
+	max-width: calc(100vw - 16px);
+	min-height: 220px;
+	max-height: 80vh;
+	display: flex;
+	flex-direction: column;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 14px;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
+	overflow: hidden;
+}
+body.fleur-pdf-dict-dragging {
+	cursor: grabbing;
+	user-select: none;
+}
+.fleur-pdf-dict-content {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	flex: 1;
+}
+.fleur-pdf-dict-header {
+	display: flex;
+	flex-direction: column;
+	padding: 12px 16px 8px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+.fleur-pdf-dict-header-top {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.fleur-pdf-dict-word {
+	flex: 1;
+	font-size: 20px;
+	font-weight: 700;
+	line-height: 1.2;
+	letter-spacing: -0.02em;
+	color: var(--text-normal);
+	word-break: break-word;
+}
+.fleur-pdf-dict-close {
+	flex: none;
+	width: 24px;
+	height: 24px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	font-size: 16px;
+	color: var(--text-muted);
+	cursor: pointer;
+}
+.fleur-pdf-dict-close:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+/* 音标列：每行一枚（英/美 + IPA + 喇叭），对齐 FleurDict */
+.fleur-pdf-dict-phonetics-col {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	margin-top: 6px;
+}
+.fleur-pdf-dict-phonetic-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-height: 20px;
+}
+.fleur-pdf-dict-phonetic-badge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 20px;
+	height: 18px;
+	padding: 0 4px;
+	border-radius: 5px;
+	background: var(--background-secondary);
+	color: var(--interactive-accent);
+	font-size: 11px;
+	font-weight: 700;
+}
+.fleur-pdf-dict-phonetic-ipa {
+	font-size: 12.5px;
+	color: var(--text-muted);
+}
+.fleur-pdf-dict-play {
+	display: inline-flex;
+	align-items: center;
+	font-size: 12px;
+	line-height: 1;
+	cursor: pointer;
+	color: var(--text-muted);
+}
+.fleur-pdf-dict-play:hover {
+	color: var(--interactive-accent);
+}
+.fleur-pdf-dict-body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 10px 16px;
+}
+.fleur-pdf-dict-loading,
+.fleur-pdf-dict-noresult {
+	padding: 18px 0;
+	text-align: center;
+	font-size: 13px;
+	color: var(--text-muted);
+}
+.fleur-pdf-dict-pos-section {
+	margin-bottom: 10px;
+}
+.fleur-pdf-dict-pos-section:last-child {
+	margin-bottom: 0;
+}
+.fleur-pdf-dict-pos-label {
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	color: var(--interactive-accent);
+	margin-bottom: 3px;
+}
+.fleur-pdf-dict-def-list {
+	margin: 0;
+	padding-left: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+.fleur-pdf-dict-def-item {
+	position: relative;
+	font-size: 13.5px;
+	line-height: 1.5;
+	color: var(--text-normal);
+}
+.fleur-pdf-dict-def-item::marker {
+	color: var(--text-faint);
+}
+.fleur-pdf-dict-def-text {
+	font-size: 13.5px;
+	line-height: 1.5;
+	color: var(--text-normal);
+}
+.fleur-pdf-dict-example {
+	font-size: 12px;
+	line-height: 1.45;
+	color: var(--text-muted);
+	font-style: italic;
+	margin-top: 1px;
+}
+.fleur-pdf-dict-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding: 8px 16px 12px;
+	border-top: 1px solid var(--background-modifier-border);
+}
+.fleur-pdf-dict-action-btn {
+	font-size: 12.5px;
+	padding: 3px 12px;
+	border-radius: 8px;
+	cursor: pointer;
+}
+.fleur-pdf-dict-ai-btn {
+	color: var(--interactive-accent);
+}
+.fleur-pdf-dict-add-btn.fleur-pdf-dict-added {
+	color: var(--text-on-accent);
+	background: var(--interactive-accent);
+	opacity: 0.85;
+}
+/* 右下角缩放手柄（对齐 FleurDict） */
+.fleur-pdf-dict-resize {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	width: 16px;
+	height: 16px;
+	cursor: nwse-resize;
+	background: linear-gradient(
+		135deg,
+		transparent 0 50%,
+		var(--background-modifier-border-hover) 50% 55%,
+		transparent 55% 65%,
+		var(--background-modifier-border-hover) 65% 70%,
+		transparent 70% 80%,
+		var(--background-modifier-border-hover) 80% 85%,
+		transparent 85%
+	);
+	border-bottom-right-radius: 14px;
+}
+
+/* ── 独立生词本管理（设置页「管理」按钮打开的 Modal；移植自 fleur-epub）────── */
+.fleur-pdf-wb-manager .modal-content {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+.fleur-pdf-wb-search .setting-item-info {
+	display: none;
+}
+.fleur-pdf-wb-search input {
+	width: 100%;
+}
+.fleur-pdf-wb-list {
+	border-top: 1px solid var(--background-modifier-border);
+	max-height: 55vh;
+	overflow-y: auto;
+}
+.fleur-pdf-wb-empty {
+	padding: 28px 0;
+	text-align: center;
+	font-size: 13px;
+	color: var(--text-muted);
+}
+.fleur-pdf-wb-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 8px 4px;
+	border-bottom: 1px solid var(--background-modifier-border-hover);
+}
+.fleur-pdf-wb-row:last-child {
+	border-bottom: none;
+}
+.fleur-pdf-wb-main {
+	flex: 1;
+	min-width: 0;
+}
+.fleur-pdf-wb-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+.fleur-pdf-wb-word {
+	font-weight: 600;
+	color: var(--text-normal);
+	word-break: break-word;
+}
+.fleur-pdf-wb-phonetic {
+	font-size: 12px;
+	color: var(--text-muted);
+}
+.fleur-pdf-wb-meaning {
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--text-muted);
+	margin-top: 1px;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+}
+.fleur-pdf-wb-actions {
+	flex: none;
+	display: flex;
+	gap: 4px;
+	padding-top: 1px;
+}
+.fleur-pdf-wb-icon {
+	width: 22px;
+	height: 22px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	font-size: 13px;
+	cursor: pointer;
+	color: var(--text-muted);
+}
+.fleur-pdf-wb-icon:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+.fleur-pdf-wb-del:hover {
+	color: var(--text-error);
+}
+.fleur-pdf-wb-more {
+	padding: 10px 0;
+	text-align: center;
+	font-size: 12.5px;
+	color: var(--text-accent);
+	cursor: pointer;
+}
+.fleur-pdf-wb-more:hover {
+	text-decoration: underline;
+}
+.fleur-pdf-wb-footer .setting-item-info {
+	display: none;
+}
+.fleur-pdf-wb-footer {
+	border-top: 1px solid var(--background-modifier-border);
+	padding-top: 10px;
+}
+/* 编辑弹窗 */
+.fleur-pdf-wb-edit .setting-item {
+	border: none;
+	padding: 8px 0;
+}
+.fleur-pdf-wb-edit .setting-item-control {
+	flex: 1;
+}
+.fleur-pdf-wb-edit input,
+.fleur-pdf-wb-edit textarea {
+	width: 100%;
+}
+.fleur-pdf-wb-edit textarea {
+	resize: vertical;
+}
+
+/* ── AI 面板「✨ AI 详解」文字按钮（仅翻译模式；对齐 fleur-epub 胶囊样式）────── */
+.fleur-ai-panel .fleur-ai-detail-btn {
+	width: auto;
+	height: auto;
+	padding: 3px 12px;
+	border: 1px solid var(--background-modifier-border, rgba(0,0,0,.12));
+	background: transparent;
+	color: var(--text-muted);
+	font-size: 12.5px;
+	line-height: 1.6;
+	border-radius: 999px;
+	transition: all 0.12s ease;
+}
+.fleur-ai-panel .fleur-ai-detail-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+/* ── 局部截图结果面板（手写模式相机工具；桌面浮动卡 / 移动端底部抽屉）────── */
+.fleur-snap-panel {
+  position: fixed;
+  z-index: 9990;
+  top: 12vh;
+  right: 32px;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+}
+.fleur-snap-panel.is-mobile {
+  top: auto;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  max-width: 100%;
+  max-height: 72vh;
+  border-radius: 16px 16px 0 0;
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+.fleur-snap-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.fleur-snap-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+.fleur-snap-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.fleur-snap-close:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.fleur-snap-preview {
+  display: flex;
+  justify-content: center;
+  padding: 12px 14px 6px;
+  background:
+    linear-gradient(45deg, var(--background-secondary) 25%, transparent 25%, transparent 75%, var(--background-secondary) 75%),
+    linear-gradient(45deg, var(--background-secondary) 25%, transparent 25%, transparent 75%, var(--background-secondary) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  min-height: 0;
+  overflow-y: auto;
+}
+.fleur-snap-preview img {
+  max-width: 100%;
+  max-height: 34vh;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: #fff;
+}
+.fleur-snap-channel {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px 2px;
+}
+.fleur-snap-channel-label {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-right: 2px;
+}
+.fleur-snap-chip {
+  border: 1px solid var(--background-modifier-border, rgba(0, 0, 0, 0.12));
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 1px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.fleur-snap-chip:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.fleur-snap-chip.is-active {
+  background: var(--interactive-accent);
+  border-color: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+.fleur-snap-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 10px 14px;
+}
+.fleur-snap-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+.fleur-snap-btn:hover {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
+}
+.fleur-snap-btn .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+.fleur-snap-status {
+  padding: 0 14px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  min-height: 1.5em;
+}
+
+/* AI 面板图片解读模式：首轮消息上方的截图附件 */
+.fleur-ai-image-attach {
+  margin-bottom: 8px;
+  text-align: center;
+}
+.fleur-ai-image-attach img {
+  max-width: 100%;
+  max-height: 30vh;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: #fff;
+}

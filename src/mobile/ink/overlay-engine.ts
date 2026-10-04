@@ -79,11 +79,21 @@ const MAX_CANVAS_PIXELS = 72_000_000;
  * 类型
  * ------------------------------------------------------------------------- */
 
+/** 局部截图的矩形（PDF 用户空间）。 */
+export interface SnapRect {
+	x0: number;
+	y0: number;
+	x1: number;
+	y1: number;
+}
+
 /** 工具状态。pen/marker 二合一（kind 区分），橡皮带半径（PDF 用户空间单位）。 */
 export type InkTool =
 	| { mode: 'pen'; color: string; width: number; opacity: number; kind: InkStrokeKind }
 	| { mode: 'eraser'; radius: number }
 	| { mode: 'lasso' }
+	// 局部截图：拖矩形 → 抬手回调 onSnap（不产生任何笔迹数据）
+	| { mode: 'snap' }
 	// 手指滚动：canvas touch-action:none 之后浏览器不再代管平移，滚动由我们驱动。
 	// 用户的工具选择永远不会落到 scroll 上 —— 它只由 touch pointerdown 触发。
 	| { mode: 'scroll' };
@@ -120,6 +130,8 @@ interface ActiveGesture {
 	eraseChanged?: boolean;
 	// lasso
 	lassoStart?: { x: number; y: number };
+	// snap（局部截图拖框）
+	snapStart?: { x: number; y: number };
 	// move（拖动已选中的笔迹）
 	moveMode?: boolean;
 	moveOrig?: Map<string, number[]>;
@@ -256,6 +268,9 @@ export class InkOverlayEngine {
 	/** 数据变化回调（InkUI 用它排自动落盘）。 */
 	private changeListeners = new Set<() => void>();
 
+	/** 截图回调（InkUI 用它打开结果面板；参数为 PDF 用户空间矩形 + 页码）。 */
+	private snapListeners = new Set<(page: number, rect: SnapRect) => void>();
+
 	/** 待重绘页集合（rAF 合并重绘）。 */
 	private paintPending = new Set<number>();
 	private paintScheduled = false;
@@ -344,6 +359,27 @@ export class InkOverlayEngine {
 		return () => this.changeListeners.delete(cb);
 	}
 
+	/** 订阅截图事件（PDF 用户空间矩形）。返回解绑函数。 */
+	onSnap(cb: (page: number, rect: SnapRect) => void): () => void {
+		this.snapListeners.add(cb);
+		return () => this.snapListeners.delete(cb);
+	}
+
+	private emitSnap(page: number, rect: SnapRect): void {
+		for (const cb of this.snapListeners) {
+			try {
+				cb(page, rect);
+			} catch {
+				/* 单个监听者坏掉不影响其余 */
+			}
+		}
+	}
+
+	/** pdf.js PDFViewer 引用（截图渲染 / 文本层提取需要）。 */
+	getPdfViewer(): any {
+		return this.viewer;
+	}
+
 	private emitChange(): void {
 		for (const cb of this.changeListeners) {
 			try {
@@ -366,6 +402,37 @@ export class InkOverlayEngine {
 		this.undoStack = [];
 		this.redoStack = [];
 		this.selection = null;
+		this.requestPaintAll();
+	}
+
+	/**
+	 * 会话中途收编对端新增的笔迹（跨设备同步合并用）。
+	 * 与 loadStrokes 的差别：不清撤销栈、按 id 去重、只增不改 —— 本会话的
+	 * 撤销历史保持有效。
+	 */
+	addStrokes(strokes: InkStroke[]): void {
+		let added = false;
+		for (const s of strokes) {
+			if (!s || typeof s.page !== 'number' || s.page < 1) continue;
+			let list = this.pages.get(s.page);
+			if (!list) {
+				list = [];
+				this.pages.set(s.page, list);
+			}
+			if (list.some((x) => x.id === s.id)) continue;
+			list.push(s);
+			added = true;
+		}
+		if (added) this.requestPaintAll();
+	}
+
+	/** 会话中途移除若干笔迹（对端删除经墓碑传过来的情形；按 id 匹配）。 */
+	removeStrokes(ids: ReadonlySet<string>): void {
+		if (!ids.size) return;
+		for (const [page, list] of this.pages) {
+			const kept = list.filter((s) => !ids.has(s.id));
+			if (kept.length !== list.length) this.pages.set(page, kept);
+		}
 		this.requestPaintAll();
 	}
 
@@ -737,6 +804,12 @@ export class InkOverlayEngine {
 				g.moved = true;
 				g.lastRaw = pdf;
 			}
+		} else if (g.tool.mode === 'snap') {
+			if (g.snapStart) {
+				this.drawSnapRect(sf, g.snapStart, pdf);
+				g.moved = true;
+				g.lastRaw = pdf;
+			}
 		}
 	};
 
@@ -944,6 +1017,7 @@ export class InkOverlayEngine {
 				opacity: tool.opacity,
 				kind: tool.kind,
 				pts: [pdf.x, pdf.y, pressure],
+				t: Date.now(),
 			};
 			g.strokeWidths = strokePointWidths(g.stroke);
 			g.renderedCount = 1;
@@ -968,6 +1042,8 @@ export class InkOverlayEngine {
 				g.lassoStart = pdf;
 				this.selection = null;
 			}
+		} else if (tool.mode === 'snap') {
+			g.snapStart = pdf;
 		}
 		this.active = g;
 		try {
@@ -1068,6 +1144,26 @@ export class InkOverlayEngine {
 			if (commit && g.lassoStart && g.lastRaw) {
 				this.selectInRect(sf.page, g.lassoStart, g.lastRaw);
 				this.drawSelection(sf);
+			}
+			return;
+		}
+
+		if (g.tool.mode === 'snap') {
+			this.clearDraft(sf);
+			// 截图不产生笔迹数据：不快照、不入 undo、不发 change
+			if (commit && g.moved && g.snapStart && g.lastRaw) {
+				const rect: SnapRect = {
+					x0: Math.min(g.snapStart.x, g.lastRaw.x),
+					y0: Math.min(g.snapStart.y, g.lastRaw.y),
+					x1: Math.max(g.snapStart.x, g.lastRaw.x),
+					y1: Math.max(g.snapStart.y, g.lastRaw.y),
+				};
+				// 过小的拖动（误触）不触发
+				const vp = this.viewportFor(sf.page);
+				const minPdf = vp ? 6 / vp.scale : 4;
+				if (rect.x1 - rect.x0 >= minPdf && rect.y1 - rect.y0 >= minPdf) {
+					this.emitSnap(sf.page, rect);
+				}
 			}
 			return;
 		}
@@ -1284,6 +1380,32 @@ export class InkOverlayEngine {
 		ctx.restore();
 	}
 
+	/** 截图拖框预览（比套索框多一层浅色蒙层，示意「框内即所得」）。 */
+	private drawSnapRect(sf: Surface, a: { x: number; y: number }, b: { x: number; y: number }): void {
+		const pa = this.pdfToCss(sf, a.x, a.y);
+		const pb = this.pdfToCss(sf, b.x, b.y);
+		if (!pa || !pb) return;
+		const ctx = sf.dctx;
+		ctx.clearRect(0, 0, sf.cssW, sf.cssH);
+		const x = Math.min(pa.x, pb.x);
+		const y = Math.min(pa.y, pb.y);
+		const w = Math.abs(pb.x - pa.x);
+		const h = Math.abs(pb.y - pa.y);
+		ctx.save();
+		// 框外蒙层（四条边带）
+		ctx.fillStyle = 'rgba(0,0,0,0.18)';
+		ctx.fillRect(0, 0, sf.cssW, y);
+		ctx.fillRect(0, y + h, sf.cssW, sf.cssH - y - h);
+		ctx.fillRect(0, y, x, h);
+		ctx.fillRect(x + w, y, sf.cssW - x - w, h);
+		// 框线
+		ctx.strokeStyle = 'rgba(80,140,255,0.95)';
+		ctx.lineWidth = 1.5;
+		ctx.setLineDash([]);
+		ctx.strokeRect(x, y, w, h);
+		ctx.restore();
+	}
+
 	private drawSelection(sf: Surface): void {
 		const ctx = sf.dctx;
 		ctx.clearRect(0, 0, sf.cssW, sf.cssH);
@@ -1334,6 +1456,7 @@ export class InkOverlayEngine {
 		g.moved = true;
 		const list = this.pages.get(g.surface.page);
 		if (!list) return;
+		const now = Date.now();
 		for (const s of list) {
 			const orig = g.moveOrig.get(s.id);
 			if (!orig) continue;
@@ -1341,6 +1464,8 @@ export class InkOverlayEngine {
 				s.pts[i] = orig[i] + dx;
 				s.pts[i + 1] = orig[i + 1] + dy;
 			}
+			// 移动视为一次修改：刷新笔迹时刻，同步合并时以此对抗更早的删除墓碑
+			s.t = now;
 		}
 		// 选区框跟随平移（从原始框 + 位移重算，拖动过程可往返不漂移）
 		const r = g.moveRectOrig;

@@ -15,14 +15,16 @@ import type FleurPDFPlugin from './main';
 export const MOBILE_BODY_CLASS = 'fleur-pdf-mobile';
 
 /**
- * 是否启用移动端 UI：
+ * 是否启用移动端 UI（手写批注整套界面）：
  * - 真机移动端（Platform.isMobile）
- * - 桌面端开启「移动端调试」开关（settings.mobileDebug，默认 false）
+ * - 桌面端开启「桌面端手写批注」开关（settings.desktopInk，默认 false）——
+ *   桌面端开启后获得与移动端一致的三态胶囊（编辑 / 手写 / 批注列表），
+ *   手写模式以鼠标落墨，并渲染移动端写入的笔迹（sidecar 随 vault 跨端同步）。
  *
  * 默认两者皆否，因此桌面端用户的行为与加入本模块之前完全一致。
  */
 export function isMobileUI(plugin: FleurPDFPlugin): boolean {
-	return Platform.isMobile || plugin.settings.mobileDebug === true;
+	return Platform.isMobile || plugin.settings.desktopInk === true;
 }
 
 /** 把移动端标记类同步到 body。onload、设置里切换开关、以及布局就绪后都要调一次。 */

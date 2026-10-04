@@ -51,11 +51,17 @@ export interface InkSidecarV2 {
 	 * 重新接管 —— 用户的感受就是「擦掉的笔迹又长回来了」。
 	 */
 	claimedIds: string[];
+	/**
+	 * 本端删除墓碑（笔迹 id → 删除时刻 ms）。跨设备同步用：
+	 * 对端还有这条笔迹时，靠墓碑判「删过，别复活」。可选字段（旧 sidecar 没有），
+	 * 旧版本插件读 v2 时忽略未知字段，双向兼容。
+	 */
+	deleted?: Record<string, number>;
 }
 
 /** load() 的返回：v2 直接可用；v1 需要迁移；null = 没有数据或读不出来。 */
 export type LoadedInk =
-	| { kind: 'v2'; strokes: InkStroke[]; claimedIds: string[] }
+	| { kind: 'v2'; strokes: InkStroke[]; claimedIds: string[]; deleted: Record<string, number> }
 	| { kind: 'v1'; legacy: LegacyInkSidecar }
 	| null;
 
@@ -69,16 +75,33 @@ function shortHash(s: string): string {
 	return (h >>> 0).toString(36);
 }
 
+/** 该 PDF 的笔迹数据文件名（sidecar 与跨端同步副本共用同一命名，1:1 对应）。 */
+export function inkDataFileName(file: TFile): string {
+	const base = file.name
+		.replace(/\.pdf$/i, '')
+		.replace(/[\\/:*?"<>|]/g, '_')
+		.slice(0, 60);
+	return `${base}.${shortHash(file.path)}.json`;
+}
+
+/** 墓碑表的清洗：Record<笔迹id, 删除时刻ms>，坏值一律丢弃。 */
+export function sanitizeTombstones(raw: unknown): Record<string, number> {
+	const out: Record<string, number> = {};
+	if (!raw || typeof raw !== 'object') return out;
+	for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+		if (typeof k === 'string' && k && typeof v === 'number' && Number.isFinite(v) && v > 0) {
+			out[k] = v;
+		}
+	}
+	return out;
+}
+
 export class InkStore {
 	constructor(private app: App) {}
 
 	/** 该 PDF 对应的 sidecar 路径：`<原文件名>.<路径哈希>.json`（保留原名便于肉眼定位）。 */
 	pathFor(file: TFile): string {
-		const base = file.name
-			.replace(/\.pdf$/i, '')
-			.replace(/[\\/:*?"<>|]/g, '_')
-			.slice(0, 60);
-		return normalizePath(`${INK_DATA_DIR}/${base}.${shortHash(file.path)}.json`);
+		return normalizePath(`${INK_DATA_DIR}/${inkDataFileName(file)}`);
 	}
 
 	/** 确保数据目录存在。 */
@@ -116,11 +139,12 @@ export class InkStore {
 			if (!parsed || typeof parsed !== 'object') return null;
 
 			if (parsed.version === 2) {
-				const strokes = this.sanitizeV2(parsed.strokes);
+				const strokes = sanitizeStrokes(parsed.strokes);
 				const claimedIds = Array.isArray(parsed.claimedIds)
 					? parsed.claimedIds.filter((x: unknown): x is string => typeof x === 'string')
 					: [];
-				return { kind: 'v2', strokes, claimedIds };
+				const deleted = sanitizeTombstones(parsed.deleted);
+				return { kind: 'v2', strokes, claimedIds, deleted };
 			}
 			if (parsed.version === 1 && Array.isArray(parsed.entries)) {
 				// 逐条过滤结构不完整的项：宁可少几个笔画，也不能让一条坏数据毒化迁移
@@ -141,43 +165,22 @@ export class InkStore {
 		}
 	}
 
-	/** v2 笔迹的逐条结构校验：宁缺毋滥，一条坏数据不能拖垮整份文件。 */
-	private sanitizeV2(raw: unknown): InkStroke[] {
-		if (!Array.isArray(raw)) return [];
-		const out: InkStroke[] = [];
-		for (const s of raw) {
-			if (!s || typeof s !== 'object') continue;
-			const { id, page, color, width, opacity, kind, pts } = s as Record<string, unknown>;
-			if (typeof id !== 'string' || !id) continue;
-			if (typeof page !== 'number' || !(page >= 1)) continue;
-			if (typeof color !== 'string') continue;
-			if (typeof width !== 'number' || !(width > 0)) continue;
-			if (kind !== 'pen' && kind !== 'marker') continue;
-			if (!Array.isArray(pts) || pts.length < 6 || pts.length % 3 !== 0) continue;
-			if (pts.some((v) => typeof v !== 'number' || !Number.isFinite(v))) continue;
-			out.push({
-				id,
-				page,
-				color,
-				width,
-				opacity: typeof opacity === 'number' && Number.isFinite(opacity) ? Math.max(0.05, Math.min(1, opacity)) : 1,
-				kind,
-				pts: pts as number[],
-			});
-		}
-		return out;
-	}
-
 	/**
 	 * 写入笔迹数据（覆盖）。
 	 *
-	 * 「笔迹全被擦光」时才删文件 —— 判据必须同时看 strokes 与 claimedIds：
+	 * 「笔迹全被擦光」时才删文件 —— 判据同时看 strokes、claimedIds 与 deleted：
 	 * 用户把接管来的笔迹全擦了，strokes 会变空，但 PDF 里的原件仍在，
-	 * claimedIds 一旦丢掉，下次进入就会把它们全部重新接管回来。
+	 * claimedIds 一旦丢掉，下次进入就会把它们全部重新接管回来；
+	 * deleted 墓碑同理 —— 全擦光后墓碑还得到处留着（对端可能还有副本），文件不能删。
 	 */
-	async save(file: TFile, strokes: InkStroke[], claimedIds: string[] = []): Promise<void> {
+	async save(
+		file: TFile,
+		strokes: InkStroke[],
+		claimedIds: string[] = [],
+		deleted: Record<string, number> = {},
+	): Promise<void> {
 		const claimed = Array.from(new Set(claimedIds));
-		if (!strokes.length && !claimed.length) {
+		if (!strokes.length && !claimed.length && !Object.keys(deleted).length) {
 			await this.remove(file);
 			return;
 		}
@@ -188,6 +191,7 @@ export class InkStore {
 			updated: Date.now(),
 			strokes: strokes.map(compactStroke),
 			claimedIds: claimed,
+			deleted,
 		};
 		await this.app.vault.adapter.write(this.pathFor(file), JSON.stringify(payload));
 	}
@@ -202,4 +206,35 @@ export class InkStore {
 			/* 删不掉不影响使用，下次 save 会覆盖 */
 		}
 	}
+}
+
+/**
+ * v2 笔迹的逐条结构校验（导出：跨端同步合并同用一份规则）。
+ * 宁缺毋滥，一条坏数据不能拖垮整份文件。
+ */
+export function sanitizeStrokes(raw: unknown): InkStroke[] {
+	if (!Array.isArray(raw)) return [];
+	const out: InkStroke[] = [];
+	for (const s of raw) {
+		if (!s || typeof s !== 'object') continue;
+		const { id, page, color, width, opacity, kind, pts, t } = s as Record<string, unknown>;
+		if (typeof id !== 'string' || !id) continue;
+		if (typeof page !== 'number' || !(page >= 1)) continue;
+		if (typeof color !== 'string') continue;
+		if (typeof width !== 'number' || !(width > 0)) continue;
+		if (kind !== 'pen' && kind !== 'marker') continue;
+		if (!Array.isArray(pts) || pts.length < 6 || pts.length % 3 !== 0) continue;
+		if (pts.some((v) => typeof v !== 'number' || !Number.isFinite(v))) continue;
+		out.push({
+			id,
+			page,
+			color,
+			width,
+			opacity: typeof opacity === 'number' && Number.isFinite(opacity) ? Math.max(0.05, Math.min(1, opacity)) : 1,
+			kind,
+			pts: pts as number[],
+			t: typeof t === 'number' && Number.isFinite(t) && t > 0 ? t : undefined,
+		});
+	}
+	return out;
 }

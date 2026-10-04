@@ -91,7 +91,7 @@ export class AIChatPanel {
   private sendBtn: HTMLButtonElement | null = null;
   private clickOutsideHandler: ((e: MouseEvent) => void) | null = null;
 
-  private chatHistory: { role: string; content: string }[] = [];
+  private chatHistory: { role: string; content: unknown }[] = [];
   private rawMarkdown = '';
   private initialSent = false;
   /** 最后一轮 AI 回答的 DOM 引用（用于"重新生成"） */
@@ -132,7 +132,9 @@ export class AIChatPanel {
   constructor(
     private plugin: FleurPDFPlugin,
     private selectedText: string,
-    private mode: 'explain' | 'translate' = 'explain'
+    private mode: 'explain' | 'translate' | 'image' = 'explain',
+    /** image 模式的截图（PNG dataURL），作为首轮消息的多模态附件。 */
+    private imageDataUrl?: string
   ) {}
 
   open(anchorX?: number, anchorY?: number) {
@@ -203,7 +205,7 @@ export class AIChatPanel {
 
     const title = header.createSpan();
     title.addClass('fleur-ai-title');
-    title.setText('阅读助手');
+    title.setText(this.mode === 'image' ? '图片解读' : '阅读助手');
 
     const closeBtn = header.createEl('button');
     closeBtn.addClass('fleur-ai-close-btn');
@@ -220,7 +222,7 @@ export class AIChatPanel {
 
     this.followUpInput = footer.createEl('textarea');
     this.followUpInput.addClass('fleur-ai-input');
-    this.followUpInput.placeholder = '继续追问…';
+    this.followUpInput.placeholder = this.mode === 'image' ? '针对这张图继续追问…' : '继续追问…';
     this.followUpInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -309,9 +311,23 @@ export class AIChatPanel {
     this.initialSent = true;
 
     let systemPrompt: string;
-    let userMessage: string;
+    let userMessage: unknown;
 
-    if (this.mode === 'translate') {
+    if (this.mode === 'image') {
+      // 图片解读模式：走视觉端点（未配置时 ai-service 给出明确提示）
+      systemPrompt = '你是一位专业的图像分析助手。用户会提供 PDF 截图，请准确理解图片内容后回答问题；涉及文字时如实转述，不要编造。回答使用中文、Markdown 格式。';
+      userMessage = [
+        { type: 'text', text: '请解读这张截图：概括内容要点；若有文字请一并列出。' },
+        { type: 'image_url', image_url: { url: this.imageDataUrl } },
+      ];
+      // 首轮消息上方先展示截图本体（对话上下文可视）
+      if (this.bodyEl && this.imageDataUrl) {
+        const shot = this.bodyEl.createDiv('fleur-ai-image-attach');
+        const img = shot.createEl('img');
+        img.src = this.imageDataUrl;
+        img.alt = '截图';
+      }
+    } else if (this.mode === 'translate') {
       // 翻译模式：专用角色，保持独立，不跟随「提示词模式」设置
       systemPrompt = '你是一位专业的翻译助手。请将用户提供的文本翻译成中文，保持原文的语义和风格。如果原文已经是中文，则翻译成英文。回答时只给出翻译结果，不需要额外解释。';
       userMessage = `请翻译以下内容：\n\n「${this.selectedText}」`;
@@ -414,7 +430,6 @@ export class AIChatPanel {
       safeSetHTML(responseEl, this.renderStreamingMarkdown(this.rawMarkdown));
       this.scrollToBottom();
     };
-
     // 流式结束后统一处理
     const onStreamEnd = async (aborted: boolean, errorMsg?: string) => {
       this.isStreaming = false;
@@ -453,7 +468,8 @@ export class AIChatPanel {
       onChunk,
       () => { void onStreamEnd(false); },
       (error) => { void onStreamEnd(false, error); },
-      controller.signal
+      controller.signal,
+      { vision: this.mode === 'image' }
     );
 
     // 如果 streamChat 返回后信号已中止（中断时 onDone/onError 均不激发）
@@ -492,6 +508,24 @@ export class AIChatPanel {
     regenBtn.title = '重新生成';
     createRegenIcon(regenBtn);
     regenBtn.addEventListener('click', () => { void this.regenerate(); });
+
+    // AI 详解：仅翻译模式（对齐 fleur-epub / FleurDict 翻译窗）——对原句做多维度讲解
+    if (this.mode === 'translate' && this.selectedText) {
+      const detailBtn = container.createEl('button');
+      detailBtn.addClass('fleur-ai-action-btn', 'fleur-ai-detail-btn');
+      detailBtn.title = '对原句进行语法、词汇、用法的详细讲解';
+      detailBtn.setText('✨ AI 详解');
+      detailBtn.addEventListener('click', () => {
+        if (this.isStreaming) return;
+        const question = `请对以下句子进行详细讲解：语法结构分析、关键词汇用法、需要注意的语言点，并给出类似结构的例句。\n\n「${this.selectedText}」`;
+        // 气泡只显示短标签（原句已在面板顶部展示），完整提示词仅进 chatHistory
+        const userBubble = this.bodyEl!.createDiv();
+        userBubble.addClass('fleur-ai-user-bubble');
+        userBubble.setText('✨ AI 详解');
+        this.chatHistory.push({ role: 'user', content: question });
+        void this.doStream();
+      });
+    }
 
     // 保存笔记
     const saveBtn = container.createEl('button');

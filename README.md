@@ -126,6 +126,23 @@ Click "Export Notes" in the sidebar to create a new Obsidian note with:
 - All comments and annotations
 - Organized by page for easy reference
 
+
+### Screenshot & OCR (network behaviour declaration)
+
+The ink toolbar includes a **camera tool**: drag a rectangle over the PDF to capture a
+high-resolution region (re-rendered via pdf.js, independent of screen zoom). From the
+result panel you can copy the image, copy recognized text, ask the AI, or save to vault.
+
+- **Text from digital PDFs** is extracted from the PDF text layer — offline and exact.
+- **Local OCR** (tesseract.js, Apache-2.0, see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md))
+  runs entirely on your machine and is **strictly opt-in** (off by default). Only after you
+  enable it in Settings are the engine files (worker script + WASM kernel, ~9.4 MB, version-pinned
+  from jsDelivr) downloaded once on first use and cached in the plugin folder — fully offline
+  afterwards. The language data file (plain data) is likewise downloaded once from the configured
+  source and cached.
+- **Vision model** (optional) sends the screenshot to the endpoint *you* configure in
+  Settings → Screenshot & OCR; nothing is sent without your explicit action.
+
 ## 🛠️ Development
 
 ### Project Structure

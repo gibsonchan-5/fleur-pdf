@@ -13,6 +13,8 @@ import { AIChatPanel } from './ai-chat-modal';
 import { markdownToPlain } from './md-utils';
 import { normalizeWhitespace } from './text-utils';
 import { isMobileUI } from './platform';
+import { getFleurDictBridge, isDictWord, type FleurDictBridge } from './dict-bridge';
+import { StandaloneDictPopup } from './standalone-dict';
 
 type UnderlineStyle = 'solid' | 'wavy';
 
@@ -1078,18 +1080,21 @@ export class PDFPatcher {
       this.attachPanelDrag(panel, grip);
     }
 
-    // 复制
-    const copyBtn = panel.createEl('button');
-    copyBtn.addClass('fleur-context-item');
-    copyBtn.title = '复制';
-    iconCopy(copyBtn);
-    copyBtn.addEventListener('click', () => {
-      void navigator.clipboard.writeText(text).then(() => new Notice('已复制'));
-      close();
-    });
-
-    // 分隔
-    panel.createDiv({ cls: 'fleur-context-sep' });
+    // 复制。⚠️ 桌面原始形态（isMobileBody 为假）保持在首位，DOM 与 1.5.15 一致；
+    // 移动端形态（含桌面「手写批注」模式）把复制挪到第二行行首 —— 上四（三色点+直线）
+    // 下四（复制/批注/询问AI/译）对称，见下方第二个创建点。
+    if (!isMobileBody()) {
+      const copyBtn = panel.createEl('button');
+      copyBtn.addClass('fleur-context-item');
+      copyBtn.title = '复制';
+      iconCopy(copyBtn);
+      copyBtn.addEventListener('click', () => {
+        void navigator.clipboard.writeText(text).then(() => new Notice('已复制'));
+        close();
+      });
+      // 分隔
+      panel.createDiv({ cls: 'fleur-context-sep' });
+    }
 
     // 三个高亮颜色圆点
     const hlGroup = panel.createDiv('fleur-context-group');
@@ -1157,8 +1162,24 @@ export class PDFPatcher {
       });
     }
 
-    // 分隔
-    panel.createDiv({ cls: 'fleur-context-sep' });
+    // 分隔（仅桌面原始形态；移动端形态此处换成强制换行 + 行首复制）
+    if (!isMobileBody()) panel.createDiv({ cls: 'fleur-context-sep' });
+
+    // ── 移动端形态：第二行行首放「复制」（上四下四的对称布局）──
+    if (isMobileBody()) {
+      // 强制换行：flex-basis 100% 的隐形分隔，行一是三个色点 + 直线
+      panel.createDiv({ cls: 'fleur-context-rowbreak' });
+      const copyBtn = panel.createEl('button');
+      copyBtn.addClass('fleur-context-item');
+      copyBtn.title = '复制';
+      iconCopy(copyBtn);
+      copyBtn.addEventListener('click', () => {
+        void navigator.clipboard.writeText(text).then(() => new Notice('已复制'));
+        close();
+      });
+      // 分隔
+      panel.createDiv({ cls: 'fleur-context-sep' });
+    }
 
     // 批注
     const commentBtn = panel.createEl('button');
@@ -1186,15 +1207,42 @@ export class PDFPatcher {
     // 分隔
     panel.createDiv({ cls: 'fleur-context-sep' });
 
-    // AI 翻译
+    // ── 译（整合按钮）：单词/短语 → 查词；句子 → AI 翻译 ──
+    // 与 fleur-epub 工具条同款分流：FleurDict 在场走桥接（FleurDict 全功能查词窗 /
+    // fleurdict 翻译窗）；不在场走内置管线（查词 = 内置词典弹窗；翻译 = 自有 AI
+    // 翻译面板，窗内可 AI 详解），未安装 FleurDict 能力不缺席。
+    const dictBridge = getFleurDictBridge(this.plugin.app);
     const translateBtn = panel.createEl('button');
     translateBtn.addClass('fleur-context-item');
-    translateBtn.title = 'AI 翻译';
-    iconTranslate(translateBtn);
-    translateBtn.addEventListener('click', () => {
-      this.askAITranslate(text, _x, _y);
-      close();
-    });
+    if (isDictWord(text) && dictBridge) {
+      translateBtn.title = '查词（FleurDict：词典释义 + AI 详解 + 加入生词本）';
+      iconTranslate(translateBtn);
+      translateBtn.addEventListener('click', () => {
+        close();
+        void this.dictLookup(dictBridge, text, _x, _y);
+      });
+    } else if (isDictWord(text)) {
+      translateBtn.title = '查词（内置词典：释义 + 发音 + AI 详解 + 加入生词本）';
+      iconTranslate(translateBtn);
+      translateBtn.addEventListener('click', () => {
+        close();
+        this.standaloneLookup(text, _x, _y);
+      });
+    } else if (dictBridge) {
+      translateBtn.title = 'AI 翻译选中文本（FleurDict，窗内可对整句 AI 详解）';
+      iconTranslate(translateBtn);
+      translateBtn.addEventListener('click', () => {
+        close();
+        this.plugin.app.workspace.trigger('fleurdict:ai-translate', text);
+      });
+    } else {
+      translateBtn.title = 'AI 翻译选中文本（窗内可对整句 AI 详解）';
+      iconTranslate(translateBtn);
+      translateBtn.addEventListener('click', () => {
+        close();
+        this.askAITranslate(text, _x, _y);
+      });
+    }
 
     // 清除标注（右键点击处命中标注层时显示 — 分层列出，叠加标注逐项清除）
     if (hitItems.length > 0) {
@@ -1810,6 +1858,75 @@ export class PDFPatcher {
   private askAITranslate(text: string, anchorX?: number, anchorY?: number) {
     const panel = new AIChatPanel(this.plugin, text, 'translate');
     panel.open(anchorX, anchorY);
+  }
+
+  // ════════════════════════════════════════════
+  //  FleurDict 查词桥接（移植自 fleur-epub，详见 dict-bridge.ts）
+  // ════════════════════════════════════════════
+
+  /**
+   * 查词：调 FleurDict 在选区旁弹查词窗（词典释义 + AI 详解 + 加入生词本）。
+   * 词与上下文在点击时先行捕获（工具条随即收起）。
+   */
+  private async dictLookup(bridge: FleurDictBridge, word: string, x: number, y: number): Promise<void> {
+    const w = word.trim();
+    if (!w) return;
+    // 查词来源由 fleur-pdf 设置固定指定（不跟随 FleurDict 设置，因部分用户未装 FleurDict）
+    const source = this.plugin.settings.dictSource;
+    const shown = await bridge.lookupWordAt(w.toLowerCase(), x, y, {
+      source,
+      onAddToWordbook: () => void this.addWordToWordbook(bridge, w, w),
+    });
+    if (!shown) new Notice('FleurDict 查询失败，请确认其已启用且网络可用', 3000);
+  }
+
+  /**
+   * 内置独立查词（FleurDict 不在场时的降级路径）：有道 / Free Dictionary 直连。
+   * 弹窗交互与 FleurDict 查词窗对齐（拖拽/缩放/记忆/AI 详解/生词本），
+   * 释义复用弹窗查询结果，不二次请求。
+   */
+  private standaloneLookup(word: string, x: number, y: number): void {
+    const w = word.trim();
+    if (!w) return;
+    const context = w;
+    let prefetched = { meaning: '', phonetic: '' };
+    new StandaloneDictPopup(this.plugin, {
+      x,
+      y,
+      word: w,
+      source: this.plugin.settings.dictSource,
+      // 弹窗查询完成后回填释义，供「＋ 加入生词本」落词时复用
+      onQueryResult: (entry) => {
+        if (!entry) return;
+        prefetched = {
+          meaning: entry.meanings
+            .map((m) => {
+              const defs = m.definitions.map((d) => d.definition).join('；');
+              return m.partOfSpeech && defs ? `${m.partOfSpeech} ${defs}` : defs;
+            })
+            .filter(Boolean)
+            .join('；'),
+          phonetic: entry.phonetics.find((p) => p.text)?.text ?? '',
+        };
+      },
+      // AI 详解：与工具条「询问AI」同管线（浮动面板、多轮追问）
+      onAIDetail: () => {
+        new AIChatPanel(this.plugin, w, 'explain').open(x, y);
+      },
+      onAddToWordbook: () => {
+        // 独立查词的落词永远进本地词库（FleurDict 不在场，无从同步）
+        void this.plugin.addLocalWordbookEntry(w, context, null, prefetched);
+      },
+    }).open().catch(() => undefined);
+  }
+
+  /** 加入生词本：同步开 → FleurDict 全管线（含欧路同步）；同步关 → 独立生词本 */
+  private async addWordToWordbook(bridge: FleurDictBridge, word: string, context: string): Promise<void> {
+    if (this.plugin.settings.dictSyncWordbook) {
+      await bridge.addToWordbook(word, context);
+    } else {
+      await this.plugin.addLocalWordbookEntry(word, context, bridge);
+    }
   }
 
   // ════════════════════════════════════════════

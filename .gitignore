@@ -30,3 +30,6 @@ test-doc.md
 debug-*.js
 DEPLOY.md
 STATUS.md
+
+# 本地 OCR 运行资产：不入库不发版（用户开启本地 OCR 后按需下载，见 src/mobile/ocr.ts）
+tesseract/

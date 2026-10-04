@@ -15,8 +15,12 @@ import {
 } from './secret-store';
 import { applyMobileBodyClass, isMobileUI } from './platform';
 import { InkEngine } from './mobile/ink-engine';
+import { OcrEngine } from './mobile/ocr';
+import { InkSync } from './mobile/ink-sync';
 import { InkUI } from './mobile/ink-ui';
 import { installInkStyles, removeInkStyles } from './mobile/ink-styles';
+import { getFleurDictBridge, queryMeaning, type FleurDictBridge } from './dict-bridge';
+import { WordbookSync, type WordbookTombstone } from './wordbook-sync';
 
 export default class FleurPDFPlugin extends Plugin {
   store: AnnotationStore;
@@ -26,10 +30,19 @@ export default class FleurPDFPlugin extends Plugin {
   /** 本机 Obsidian 是否支持官方 SecretStorage（系统钥匙串）。 */
   secretStorageAvailable = false;
 
+  /** 独立生词本跨设备同步（wordbookSync 开关，默认关；详见 wordbook-sync.ts） */
+  wordbookSync = new WordbookSync(this.app, this);
+
+  /** 手写笔迹跨设备同步（inkCrossDeviceSync 开关，默认关；详见 mobile/ink-sync.ts） */
+  inkSync = new InkSync(this.app, () => this.settings.inkCrossDeviceSync === true);
+
   /** 移动端手写批注：内置墨迹引擎的接入层。桌面端也会构造，但不会激活。 */
   inkEngine: InkEngine;
-  /** 移动端手写批注的 UI。仅 isMobileUI() 为真时创建，桌面端恒为 null。 */
+  /** 手写批注的 UI。仅 isMobileUI() 为真时创建（真机移动端，或桌面开启「桌面端手写批注」）。 */
   inkUI: InkUI | null = null;
+
+  /** 本地 OCR（tesseract.js 懒加载）：截图取字的离线通道。 */
+  ocr = new OcrEngine(this);
 
   /**
    * 左侧栏图标元素。
@@ -45,8 +58,78 @@ export default class FleurPDFPlugin extends Plugin {
     return resolveBackend(this.app, this.settings.secretStorageMode);
   }
 
+  // ── 独立生词本（dictSyncWordbook = false 时使用；存 settings.wordbook → data.json）──
+  // 移植自 fleur-epub 同名方法；事件名改为 fleur-pdf:wordbook-changed。
+
+  /**
+   * 加入独立生词本：去重（同词忽略）、填充释义（复用 FleurDict 词典引擎，可失败）、
+   * 落盘并 Notice。不触碰 FleurDict 的词库数据。
+   */
+  async addLocalWordbookEntry(word: string, context: string | undefined, bridge: FleurDictBridge | null, prefetched?: { meaning: string; phonetic: string }): Promise<void> {
+    const norm = word.trim().toLowerCase();
+    if (!norm) return;
+    if (this.settings.wordbook.some((w) => w.word === norm)) {
+      new Notice(`"${norm}" 已在独立生词本中`, 2000);
+      return;
+    }
+    // 释义来源优先级：弹窗已查到的预取释义 > FleurDict 引擎查询 > 空串
+    const { meaning, phonetic } = prefetched ?? (bridge ? await queryMeaning(bridge, norm) : { meaning: '', phonetic: '' });
+    this.settings.wordbook.push({
+      word: norm,
+      meaning,
+      phonetic,
+      context: context?.trim() || undefined,
+      addedAt: new Date().toISOString(),
+    });
+    await this.saveSettings();
+    new Notice(`✓ "${norm}" 已加入 fleur-pdf 独立生词本`, 2500);
+    await this.wordbookSync.push();
+    this.app.workspace.trigger('fleur-pdf:wordbook-changed');
+  }
+
+  /** 删除独立生词本词条（生词本管理 Modal 用；广播事件） */
+  async removeWordbookEntry(word: string): Promise<void> {
+    const removed = this.settings.wordbook.find((w) => w.word === word);
+    const before = this.settings.wordbook.length;
+    this.settings.wordbook = this.settings.wordbook.filter((w) => w.word !== word);
+    if (this.settings.wordbook.length === before) return;
+    await this.saveSettings();
+    new Notice(`已删除 "${word}"`, 2000);
+    // 删除留墓碑：否则另一端合并时该词会被「复活」
+    await this.wordbookSync.push(removed ? [{ word: removed.word, deletedAt: removed.addedAt }] : []);
+    this.app.workspace.trigger('fleur-pdf:wordbook-changed');
+  }
+
+  /** 编辑独立生词本词条（按原词定位；word 字段允许改名） */
+  async updateWordbookEntry(originalWord: string, patch: { word: string; phonetic: string; meaning: string }): Promise<void> {
+    const entry = this.settings.wordbook.find((w) => w.word === originalWord);
+    if (!entry) return;
+    const renamed = patch.word !== originalWord;
+    entry.word = patch.word;
+    entry.phonetic = patch.phonetic;
+    entry.meaning = patch.meaning;
+    await this.saveSettings();
+    // 改名 = 旧词留墓碑（否则另一端合并时新旧两词并存）；仅改释义不留
+    await this.wordbookSync.push(renamed ? [{ word: originalWord, deletedAt: entry.addedAt }] : []);
+    this.app.workspace.trigger('fleur-pdf:wordbook-changed');
+  }
+
+  /** 清空独立生词本（生词本管理 Modal 二次确认后调用） */
+  async clearWordbook(): Promise<void> {
+    // 全部词条留墓碑：否则另一端同步会把清空「复活」回来
+    const deletions: WordbookTombstone[] = this.settings.wordbook.map((w) => ({ word: w.word, deletedAt: w.addedAt }));
+    this.settings.wordbook = [];
+    await this.saveSettings();
+    await this.wordbookSync.push(deletions);
+    new Notice('独立生词本已清空', 2500);
+    this.app.workspace.trigger('fleur-pdf:wordbook-changed');
+  }
+
   async onload() {
     await this.loadSettings();
+
+    // 独立生词本跨设备同步（开关关闭时内部全部跳过，桌面/移动零影响）
+    this.wordbookSync.init();
 
     this.store = new AnnotationStore(this.app, this.manifest.id);
     this.patcher = new PDFPatcher(this);
@@ -75,7 +158,7 @@ export default class FleurPDFPlugin extends Plugin {
       callback: () => { void this.activateSidebar(); }
     });
 
-    // 移动端 UI 相关命令只在移动端（或桌面开启预览形态）注册 ——
+    // 手写批注相关命令只在移动端 UI 生效时（真机，或桌面开启手写批注）注册 ——
     // 桌面默认状态下命令面板与 1.5.15 完全一致（桌面零影响）。
     if (isMobileUI(this)) {
       // 悬浮胶囊被收起 / 被隐藏后，必须留一条「用命令就能找回来」的路：
@@ -185,6 +268,7 @@ export default class FleurPDFPlugin extends Plugin {
     this.inkUI?.unmount();
     this.inkUI = null;
     this.inkEngine?.dispose();
+    void this.ocr.terminate();
     removeInkStyles();
   }
 
@@ -224,6 +308,12 @@ export default class FleurPDFPlugin extends Plugin {
   async loadSettings() {
     const saved = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved);
+    // 迁移：旧的调试开关 mobileDebug（「在桌面端预览移动端形态」）已转正为
+    // 正式功能开关 desktopInk（「桌面端手写批注」）。曾开启预览的用户无感升级。
+    const legacyMobileDebug = (this.settings as unknown as Record<string, unknown>).mobileDebug;
+    if (legacyMobileDebug === true && this.settings.desktopInk !== true) {
+      this.settings.desktopInk = true;
+    }
     // 迁移：早期版本只有单一的「自定义 Prompt」文本框（customPrompt: string），
     // 现已改为三个自定义槽（customPrompts: string[]，对应 custom-1/2/3）。
     // 把旧文本落进 1 号槽，并沿用旧版行为——写过自定义提示词的用户自动切到「自定义 1」，

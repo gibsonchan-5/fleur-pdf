@@ -75,7 +75,7 @@ export class SidebarView extends ItemView {
 
   getViewType() { return VIEW_TYPE_SIDEBAR; }
   getDisplayText() { return '批注总览'; }
-  getIcon() { return 'list'; }
+  getIcon() { return 'file-text'; }
 
   async onOpen() { await this.refresh(); }
 
