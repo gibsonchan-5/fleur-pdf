@@ -1,4 +1,4 @@
-import type { Plugin } from 'obsidian';
+import { TFile, type Plugin } from 'obsidian';
 
 /**
  * 手写断触真机诊断记录器。
@@ -51,6 +51,8 @@ interface InkDbgRecord {
 }
 
 const LOG_PATH = 'FleurPDF/ink-debug.json';
+/** Markdown 副本路径：md 走 vault 索引，即时显示在侧边栏并随笔记同步跨设备 */
+const LOG_MD_PATH = 'FleurPDF/ink-debug.md';
 /** 每 2s 落盘一次，断触导致页面崩溃也不丢前面的事件 */
 const FLUSH_MS = 2000;
 /** 上限保护：到达后自动停止，避免无限膨胀 */
@@ -128,7 +130,7 @@ export class InkDebugRecorder {
 			this.push({ i: this.seq++, t: Math.round(performance.now() - this.t0), e: 'diagnostic-stop', m: reason });
 		}
 		await this.flush();
-		return { count: this.records.length, path: LOG_PATH };
+		return { count: this.records.length, path: LOG_MD_PATH };
 	}
 
 	private record(ev: Event): void {
@@ -178,16 +180,39 @@ export class InkDebugRecorder {
 	private async flush(): Promise<void> {
 		if (!this.dirty) return;
 		this.dirty = false;
+		const json = JSON.stringify({ meta: this.meta, events: this.records });
 		try {
-			const adapter = this.plugin.app.vault.adapter;
+			const { vault } = this.plugin.app;
+			// ① JSON 原始文件（分析用）——adapter 直写，不经 vault 索引
 			try {
-				await adapter.mkdir('FleurPDF');
+				await vault.adapter.mkdir('FleurPDF');
 			} catch {
 				// 目录已存在
 			}
-			await adapter.write(LOG_PATH, JSON.stringify({ meta: this.meta, events: this.records }));
+			await vault.adapter.write(LOG_PATH, json);
 		} catch (err) {
 			console.error('[FleurPDF] ink-debug 落盘失败', err);
+		}
+		// ② Markdown 副本——走 vault API，写完立刻进侧边栏与同步索引。
+		// 移动端对外部写入的 JSON 既不实时显示、也不保证被同步方案携带，
+		// 而 md 是笔记同步的必达格式（断触排查数据靠它跨设备回传）。
+		try {
+			const { vault } = this.plugin.app;
+			const mdPath = LOG_MD_PATH;
+			const md = `# FleurPDF 手写断触诊断\n\n> 本文件由诊断命令自动生成，可整篇删除。\n\n\`\`\`json\n${json}\n\`\`\`\n`;
+			let file = vault.getAbstractFileByPath(mdPath);
+			if (file instanceof TFile) {
+				await vault.modify(file, md);
+			} else {
+				try {
+					await vault.createFolder('FleurPDF');
+				} catch {
+					// 目录已存在
+				}
+				file = await vault.create(mdPath, md);
+			}
+		} catch (err) {
+			console.error('[FleurPDF] ink-debug Markdown 副本写入失败', err);
 		}
 	}
 }
