@@ -1453,15 +1453,16 @@ body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn .svg-icon {
 /* ── 悬浮胶囊：拖动中 / 收起成贴边把手 ──
    拖动中抬层级 + 加深投影，给一个「抓住了」的反馈；
    收起后只留一根半透明贴边把手 —— 不挡正文，但随时点得回来。
-   （长按 650ms 收起，点把手恢复；命令面板也有同名开关兜底。） */
+   （长按 650ms 收起，点把手恢复；命令面板也有同名开关兜底。）
+   1.7.11 移除 .is-auto-collapsed（文本模式自动贴边）：真机反馈把手太小点不中，
+   自动缩起弊大于利；让路改由用户长按收起自己表达。 */
 body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-dragging {
   z-index: 40;
   opacity: 0.92;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
 }
 
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed,
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-auto-collapsed {
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed {
   padding: 0;
   gap: 0;
   background: transparent;
@@ -1469,17 +1470,13 @@ body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-auto-collapsed {
   box-shadow: none;
 }
 
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed .fleur-pdf-ink-switch-btn,
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-auto-collapsed .fleur-pdf-ink-switch-btn {
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed .fleur-pdf-ink-switch-btn {
   display: none;
 }
 
 /* 把手本体：14×46 的圆角竖条，常态半透明，按住时变实。
-   .is-auto-collapsed 与 .is-collapsed 画得一模一样，区别只在生命周期：
-   前者是「文本批注模式闲置 2.6s / 开始选字」时临时贴边（不落盘、进手写模式即恢复），
-   后者是用户长按收起的持久状态。两层状态正交，任一为真即成把手。 */
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed::after,
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-auto-collapsed::after {
+   只在用户长按收起（.is-collapsed，持久态）时出现。 */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed::after {
   content: '';
   display: block;
   width: 14px;
@@ -1492,8 +1489,7 @@ body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-auto-collapsed::after {
   transition: opacity 120ms ease;
 }
 
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed:active::after,
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-auto-collapsed:active::after {
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed:active::after {
   opacity: 1;
 }
 

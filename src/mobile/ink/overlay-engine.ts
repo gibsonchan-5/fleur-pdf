@@ -1044,7 +1044,7 @@ export class InkOverlayEngine {
 			if (this.active?.tool.mode === 'scroll') this.finishGesture(false);
 		}
 		const g = this.active;
-		if (!g || e.pointerId !== g.pointerId) return;
+		if (!g) return;
 		// 归并窗口（cancel / 幽灵 up 宽限）内，旧指针的悬停 move **不上墨、只采样**。
 		// 1.7.6 在这里直接 return 把轨迹整段丢掉，然后在 onPointerDown 用一根
 		// lineTo 把最后一个墨点连到新落点 —— 那根全宽圆头的直线就是「连笔」。
@@ -1052,9 +1052,21 @@ export class InkOverlayEngine {
 		// 的时候本来就该留下这条线），判 gap 时不落墨。
 		// 仍然不做 preventDefault / 不改写窗口，误触与滚动的语义保持原样。
 		if (this.cancelTimer !== null) {
-			this.sampleGraceHover(g, e);
+			// ⚠️ 悬停采样**不校验 pointerId**（真机 1.7.10 诊断定性）：这批固件在幽灵
+			// 抬笔瞬间会把笔重编成新 id（up=144 → 悬停/重落=145，68 次重落 30/30 跳变），
+			// 按 id 过滤会把宽限窗里的悬停轨迹整段丢掉，⑤ 悬停续写判据随之全灭。
+			// 宽限期内不存在第二支正在接触的笔，凡 pen 悬停 move 都是同一支笔。
+			if (e.pointerType === 'pen' && g.stroke) {
+				this.sampleGraceHover(g, e);
+				// pointerout 紧跟 up 是这批固件的习惯动作（1.7.10 采集：30/30 同毫秒），
+				// 而 W3C PE3 对支持悬停的笔的规范行为本就是 up 后不立即 out。out 之后
+				// 悬停 move 还在继续 = 笔从未离开感应区 —— 悬停证据到达即撤销
+				// leftProximity，别让 ③ 把这类重落误判成有意提笔。
+				if (this.graceFromUp) g.leftProximity = false;
+			}
 			return;
 		}
+		if (e.pointerId !== g.pointerId) return;
 		e.preventDefault();
 		e.stopPropagation();
 		this.penActivityUntil = performance.now() + PEN_TOUCH_REJECTION_MS;
@@ -1114,7 +1126,8 @@ export class InkOverlayEngine {
 	 *
 	 * 同时存 CSS 坐标（判定的距离尺度，与用户手感一致、不随缩放变）和 PDF 坐标
 	 * （判 bridge 时按**真实路径**落墨，而不是把两端连成一根弦 —— 那根弦就是连笔）。
-	 * 上限 32 点（滚动丢弃最早的）：够覆盖最长的穿隙窗 collinearWindowMs=220ms
+	 * 上限 32 点（滚动丢弃最早的）：够覆盖最长的宽限窗（穿隙窗 / 悬停续写窗默认都
+	 * 是 220ms）
 	 * （真机悬停采样间隔 p50≈8ms），再多对直度判定没有增量信息。
 	 */
 	private sampleGraceHover(g: ActiveGesture, e: PointerEvent): void {
@@ -1146,13 +1159,13 @@ export class InkOverlayEngine {
 			g.graceHover = [];
 			g.leftProximity = false;
 			if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
-			// 宽限拉到 max(归并窗, 直行穿隙窗)：穿隙判据（grace-merge ④）允许比 windowMs
-			// 更长的抬笔间隔，但它 outside windowMs 是判定函数里唯一的例外分支 ——
-			// 出归并窗后除「共线短跳」外一律 commit，行为与拉窗之前一致。
+			// 宽限拉到三个窗的 max：穿隙判据（④）与悬停续写判据（⑤）允许比 windowMs
+			// 更长的抬笔间隔，但它们 outside windowMs 是判定函数里仅有的例外分支 ——
+			// 出归并窗后除这两条落墨分支外一律 commit，行为与拉窗之前一致。
 			this.cancelTimer = window.setTimeout(() => {
 				this.cancelTimer = null;
 				this.finishGesture(true);
-			}, Math.max(this.grace.windowMs, this.grace.collinearWindowMs));
+			}, Math.max(this.grace.windowMs, this.grace.collinearWindowMs, this.grace.hoverJoinWindowMs));
 			return;
 		}
 		this.finishGesture(true);

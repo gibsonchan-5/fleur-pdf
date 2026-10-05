@@ -1098,7 +1098,7 @@ export class PDFPatcher {
     /** 关闭当前面板（各按钮动作完成后统一走它，保证 openPanel 被清空）。 */
     const close = () => this.hideContextMenu();
 
-    // 拖拽把手：菜单默认贴着选区弹出，可能挡住正文或选区滑杆 —— 用户可拖走。
+    // 拖拽把手：菜单默认在屏幕底部弹出（1.7.11 起），可能仍需要临时避让 —— 用户可拖走。
     // 只认把手，按钮区交互不受影响（与手写笔盒的把手语义一致）。
     // ⚠️ 仅移动端创建：桌面端面板 DOM 与 1.5.15 保持一致。
     if (isMobileBody()) {
@@ -1310,14 +1310,24 @@ export class PDFPatcher {
     let posX = _x;
     let posY = _y;
 
-    if (_x + panelRect.width > vw - 8) {
-      posX = vw - panelRect.width - 8;
-    }
-    if (_y + panelRect.height > vh - 8) {
+    if (autoKey !== '' && isMobileBody()) {
+      // 1.7.11：选区自动唤起的菜单默认**屏幕底部居中**。旧逻辑贴着选区下缘弹
+      // （rect.bottom+44 再夹视口），选区一落到屏幕下半部分，面板就被夹回来
+      // 压住正文和选择滑杆 —— 真机反馈「就近弹出干扰选中文本」。底部居中是
+      // 阅读器的通行做法（微信读书同款），天然远离滑杆与选区；把手拖走能力
+      // 保留，但拖动不持久化，下次弹出仍回底部（面板随选区重建）。
+      posX = (vw - panelRect.width) / 2;
       posY = vh - panelRect.height - 8;
+    } else {
+      if (_x + panelRect.width > vw - 8) {
+        posX = vw - panelRect.width - 8;
+      }
+      if (_y + panelRect.height > vh - 8) {
+        posY = vh - panelRect.height - 8;
+      }
+      if (posX < 8) posX = 8;
+      if (posY < 8) posY = 8;
     }
-    if (posX < 8) posX = 8;
-    if (posY < 8) posY = 8;
 
     panel.setCssStyles({ left: `${posX}px`, top: `${posY}px` });
   }
