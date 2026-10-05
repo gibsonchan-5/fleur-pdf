@@ -100,17 +100,17 @@ export interface GraceMergeTuning {
 	 */
 	collinearMaxTurnDeg: number;
 	/**
-	 * 「悬停续写」桥接的时间上限（ms）：抬笔后多久内，只要宽限窗里**采到了悬停轨迹**
-	 * （笔根本没离开感应区，固件只是把接触签报丢了）且落点在近端，就判同一笔并按
-	 * 真实悬停轨迹落墨。
+	 * 「悬停续写」桥接的时间上限（ms）：抬笔后多久内，落点在近端就判同一笔——
+	 * 采到了悬停轨迹的按真实轨迹落墨，没采到的（这批固件幽灵抬笔不带悬停事件，
+	 * 1.7.13 采集定性）画直弦续写。
 	 *
 	 * 依据（真机 1.7.10 采集，1.7.11 定值）：68 次抬笔重落里，固件幽灵重落全部落在
 	 * 14~168ms（30 次），有意提笔全部 ≥233ms（38 次，中位 434ms）——空档清晰。
-	 * 220ms 坐在空档里：比最长的幽灵抬笔留 52ms 余量，距最短的有意提笔仍有 13ms。
+	 * 1.7.12 采集复核：幽灵重落 dt=16~90ms（6 次，均无悬停事件），有意提笔 ≥442ms。
+	 * 220ms 坐在空档里：比实测最长的幽灵抬笔留 52ms 余量，距最短的有意提笔仍有 13ms。
 	 * 悬停轨迹是比 dt 更硬的物理证据：笔能在空中画出连续轨迹，就说明 digitizer 一直
-	 * 看得见它——「离开纸面又回来」的有意提笔在轨迹上必然表现为提笔前后的两段接触，
-	 * 中间的悬停段又短又少。没有悬停采样的设备上本判据自动失效（hoverPathPx=0），
-	 * 行为与 1.7.10 一致。
+	 * 看得见它。没有悬停采样时本判据退化为「近端 + 短窗即续写」，靠 dt 双峰空档
+	 * 与 nearPx 跳距上限兜底。
 	 */
 	hoverJoinWindowMs: number;
 }
@@ -294,19 +294,22 @@ export function classifyGraceMerge(
 		ev.hoverPathPx <= ev.jumpPx * t.hoverStraighten + t.hoverStraightSlackPx;
 	if (collinearHop && ev.dtMs <= t.collinearWindowMs) return 'bridge';
 
-	// ⑤ 悬停续写（1.7.11，真机 1.7.10 采集定性）：窗口里**采到了悬停轨迹** =
+	// ⑤ 悬停续写（1.7.11 引入，1.7.13 放宽为悬停可选）：窗口里**采到了悬停轨迹** =
 	//    digitizer 全程看得见这支笔，固件只是把接触签报丢了（还顺手重编了 pointerId、
 	//    紧跟 up 发了 out）。这样的重落不可能是「提笔-移动-落笔」的有意换笔——
 	//    笔从未离开过纸面上方。判据与快慢无关：慢写（实测末端速度 0.01~0.35px/ms）
 	//    用不上 ①，方向又改了（汉字笔画间转角 77~173°）用不上 ④，本条全兜住。
-	//    落墨画的是**真实悬停轨迹**：那是笔尖在空中实际走过的路，不是替用户画的弦。
-	//    轨迹直度沿用 ①④ 的比值上界：轨迹比跳距长得多说明笔在窝里绕，画出来不是
-	//    用户预期的那条线，退回 gap（归并语义保住、这段不落墨）。没有悬停采样的
-	//    设备（hoverPathPx=0）本条自然失效，其余判据原样兜底。
+	//    1.7.13（真机 1.7.12 采集定性）：这批固件的幽灵抬笔**有时不带任何悬停事件**——
+	//    6 对短间隙重落（dt=16~90ms、jump=6~37px）在 up 与 down 之间零悬停采样，
+	//    旧版要求 hoverPathPx>0 使 ⑤ 在这类抬笔上整体失效，断触原样。现把悬停证据
+	//    降级为可选：采到了仍按真实轨迹落墨并查直度（笔在窝里绕的退回 gap），
+	//    没采到则画「最后接触点 → 新落点」的直弦——jump ≤ nearPx 时这根弦与
+	//    1.7.6 的连线等宽等短，错判代价被跳距钉死。时间门槛不变：有意提笔
+	//    实测 ≥233ms（1.7.10）/ ≥442ms（1.7.12），220ms 窗口仍坐在双峰空档里。
 	const hoverJoin =
-		ev.hoverPathPx > 0 &&
 		ev.jumpPx <= t.nearPx &&
-		ev.hoverPathPx <= ev.jumpPx * t.hoverStraighten + t.hoverStraightSlackPx;
+		(ev.hoverPathPx <= 0 ||
+			ev.hoverPathPx <= ev.jumpPx * t.hoverStraighten + t.hoverStraightSlackPx);
 	if (hoverJoin && ev.dtMs <= t.hoverJoinWindowMs) return 'bridge';
 
 	// 出窗（其余判据的窗口）/ 落点过远：新笔画。
