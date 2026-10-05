@@ -202,6 +202,9 @@ export default class FleurPDFPlugin extends Plugin {
               new Notice(`诊断已停止：共 ${count} 条事件，已写入 ${path}`, 6000);
             });
           } else {
+            // 帧探针要能在掉帧那一刻抄一份覆盖层瞬时状态（几张 canvas、多少笔迹、
+            // 什么笔），否则「输入没来」和「画不过来」在事件流里长得一模一样。
+            this.inkDebug.setProbe(() => this.inkUI?.debugInfo ?? null);
             this.inkDebug.start();
             new Notice('诊断已开始：请正常书写并复现断触，完成后再次运行本命令停止', 8000);
           }

@@ -123,6 +123,18 @@ const PALM_SIZE_THRESHOLD = 42;
 const MAX_DPR = 3;
 const MAX_CANVAS_PIXELS = 72_000_000;
 
+/**
+ * 笔迹层渲染倍率（设置项 `inkRenderScale`）→ DPR 上限。
+ *
+ * 栅格化与合成的代价随 DPR 平方增长：2.75 DPR 的平板上一页 777×1164 的页，
+ * committed + draft 两层位图合计约 55MB；把上限压到 2 就少一半像素。真机诊断
+ * （frame-jank 记录）显示卡顿出在绘制侧时，这一档是最直接、也最可逆的旋钮：
+ * 只改 canvas 物理分辨率，笔迹数据/坐标/命中测试全在 PDF 用户空间，永不受影响，
+ * 任何时候改回 auto 即恢复原生锐度。
+ */
+export type InkRenderScale = 'auto' | 'balanced' | 'fast';
+const RENDER_SCALE_DPR: Record<InkRenderScale, number> = { auto: MAX_DPR, balanced: 2, fast: 1.5 };
+
 /* ---------------------------------------------------------------------------
  * 类型
  * ------------------------------------------------------------------------- */
@@ -339,6 +351,8 @@ export class InkOverlayEngine {
 	 * 「近端连线续写」不动 —— 那条通道是误触修复的一部分，不碰。
 	 */
 	private grace: GraceMergeTuning = { ...DEFAULT_GRACE_TUNING };
+	/** 笔迹层 DPR 上限（设置项 inkRenderScale 映射而来，见 setRenderScale）。 */
+	private dprCap = MAX_DPR;
 	/** 笔最近活动时刻（掌压拒止窗口用）。 */
 	private penActivityUntil = 0;
 	/** 进行中的笔所触发的「拒绝 touch」窗口。 */
@@ -357,6 +371,15 @@ export class InkOverlayEngine {
 	/** DOM 观察。 */
 	private pageObserver: MutationObserver | null = null;
 	private reconcileTimer: number | null = null;
+	/**
+	 * 书写进行中对齐请求的「欠账」标记：手势中不拆/挂覆盖层（见 scheduleReconcile），
+	 * 手势一结束就补跑一次，保证笔迹与 DOM 最终一致。
+	 */
+	private reconcileDeferred = false;
+
+	/** 荧光笔预览的合帧状态（见 scheduleMarkerPreview）。 */
+	private markerPreview: { sf: Surface; stroke: InkStroke } | null = null;
+	private markerPreviewRaf: number | null = null;
 
 	/** 数据变化回调（InkUI 用它排自动落盘）。 */
 	private changeListeners = new Set<() => void>();
@@ -408,6 +431,7 @@ export class InkOverlayEngine {
 		if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
 		this.cancelTimer = null;
 		this.cancelMomentum();
+		this.cancelMarkerPreview();
 		// 指滑手势进行中强撤：不提交也不回滚（用户已滚到的位置保持原样），
 		// 但要解除 will-change 提示、取消排中的应用帧，避免残留
 		if (this.active?.tool.mode === 'scroll') {
@@ -432,7 +456,6 @@ export class InkOverlayEngine {
 		document.removeEventListener('pointercancel', this.onPointerCancel, { capture: true } as any);
 		document.removeEventListener('touchmove', this.onTouchMoveGuard, { capture: true } as any);
 		document.removeEventListener('pointerout', this.onPointerOut, { capture: true } as any);
-		document.body.removeClass('fleur-pdf-ink-stroking');
 		this.pageObserver?.disconnect();
 		this.pageObserver = null;
 		for (const n of Array.from(this.surfaces.keys())) this.unmountSurface(n);
@@ -504,7 +527,7 @@ export class InkOverlayEngine {
 	 * 撤销历史保持有效。
 	 */
 	addStrokes(strokes: InkStroke[]): void {
-		let added = false;
+		const touched = new Set<number>();
 		for (const s of strokes) {
 			if (!s || typeof s.page !== 'number' || s.page < 1) continue;
 			let list = this.pages.get(s.page);
@@ -514,9 +537,11 @@ export class InkOverlayEngine {
 			}
 			if (list.some((x) => x.id === s.id)) continue;
 			list.push(s);
-			added = true;
+			touched.add(s.page);
 		}
-		if (added) this.requestPaintAll();
+		// 只重绘真正变过的页：requestPaintAll 会把每个已挂载 surface 的整页笔画
+		// 重画一遍，同步回来的往往只有一两页，代价却按页数×笔画数算
+		for (const page of touched) this.requestPaint(page);
 	}
 
 	/** 会话中途移除若干笔迹（对端删除经墓碑传过来的情形；按 id 匹配）。 */
@@ -524,9 +549,11 @@ export class InkOverlayEngine {
 		if (!ids.size) return;
 		for (const [page, list] of this.pages) {
 			const kept = list.filter((s) => !ids.has(s.id));
-			if (kept.length !== list.length) this.pages.set(page, kept);
+			if (kept.length === list.length) continue;
+			this.pages.set(page, kept);
+			// 同样只重绘被改到的那一页
+			this.requestPaint(page);
 		}
-		this.requestPaintAll();
 	}
 
 	/** 导出全部笔迹（落盘用）。进行中的手势先提交，保证最后一笔不丢。 */
@@ -541,7 +568,14 @@ export class InkOverlayEngine {
 		this.tool = tool;
 		// 切走时清掉旧工具的视觉残留
 		if (tool.mode !== 'lasso') this.selection = null;
-		this.requestPaintAll();
+		// ⚠️ 工具切换**不改任何已提交的墨迹**（颜色/宽度/断点都是每条笔画自带的），
+		// 需要清掉的只是 draft 层上的选区框 / 荧光预览 / 橡皮圈。整页重绘（clearRect
+		// 全页 + 逐段重画所有笔画）在高 DPR 平板上是一次明显的掉帧，而它画的还是
+		// 已经在屏上的东西 —— 真机「点笔盒就卡一下」的来源。改成只清 draft。
+		for (const sf of this.surfaces.values()) {
+			this.clearDraft(sf);
+			if (this.selection?.page === sf.page) this.drawSelection(sf);
+		}
 	}
 
 	/**
@@ -555,6 +589,17 @@ export class InkOverlayEngine {
 
 	get graceTuning(): GraceMergeTuning {
 		return { ...this.grace };
+	}
+
+	/**
+	 * 设置笔迹层渲染倍率（见 RENDER_SCALE_DPR）。改动后立刻把已挂的层重设分辨率并重绘，
+	 * 所以「设置页改一下就能看到效果」，不需要退出重进手写模式。
+	 */
+	setRenderScale(scale: InkRenderScale | undefined): void {
+		const cap = RENDER_SCALE_DPR[scale ?? 'auto'] ?? MAX_DPR;
+		if (cap === this.dprCap) return;
+		this.dprCap = cap;
+		for (const sf of this.surfaces.values()) this.resizeSurface(sf);
 	}
 
 	/* ------------------------------ 撤销 / 重做 ------------------------------ */
@@ -659,16 +704,18 @@ export class InkOverlayEngine {
 		if (!this.hiddenInkIds.size) return;
 		const root: HTMLElement | undefined = this.viewer?.viewer;
 		if (!root) return;
-		for (const id of this.hiddenInkIds) {
-			try {
-				const sel = `[data-annotation-id="${CSS.escape(id)}"]`;
-				root.querySelectorAll<HTMLElement>(sel).forEach((el) => {
-					// 隐藏 pdf.js 原生笔迹：走 setCssStyles（审核规则禁 el.style 直赋值）
-					el.setCssStyles({ display: 'none' });
+		// ⚠️ 一次整树查询 + Set 命中，取代「每个被接管的 id 各扫一遍整棵树」。
+		// 旧写法在 reconcile 里跑（DOM 一变就 80ms 一次），接管过的固有注释一多，
+		// 光查 DOM 就把主线程吃满 —— 表现就是书写时周期性一卡，且笔迹越多越卡。
+		try {
+			root
+				.querySelectorAll<HTMLElement>('[data-annotation-id]')
+				.forEach((el) => {
+					const id = el.dataset.annotationId;
+					if (id && this.hiddenInkIds.has(id)) el.setCssStyles({ display: 'none' });
 				});
-			} catch {
-				/* 单个 id 的转义/查询失败不影响其余 */
-			}
+		} catch {
+			/* 查询失败只是少涂一次隐藏，不影响笔迹数据 */
 		}
 	}
 
@@ -676,10 +723,27 @@ export class InkOverlayEngine {
 
 	private scheduleReconcile(): void {
 		if (this.reconcileTimer !== null) return;
+		// ⚠️ 落笔进行中不对齐覆盖层。reconcile 命中新页时会 mountSurface：新建两张
+		// 整页 canvas（高 DPR 下一张就几十 MB）并整页重绘已有笔画 —— 那正是帧预算
+		// 最紧的一刻，真机上表现为「写着写着突然一卡」。手势期间 pdf.js 的 DOM 变动
+		// （文本层分段注入 / 页面重建）本来就频繁，改成笔画结束立刻补跑一次：
+		// 数据始终在 this.pages 里，覆盖层最迟在一笔之内就跟回来，不丢笔。
+		// 只挡**笔迹手势**：指滑滚动期间照常挂层，否则滚到新页要等松手才见到笔迹。
+		if (this.active?.stroke) {
+			this.reconcileDeferred = true;
+			return;
+		}
 		this.reconcileTimer = window.setTimeout(() => {
 			this.reconcileTimer = null;
 			this.reconcile();
 		}, 80);
+	}
+
+	/** 手势收尾后补跑被推迟的对齐（如果有）。 */
+	private runDeferredReconcile(): void {
+		if (!this.reconcileDeferred) return;
+		this.reconcileDeferred = false;
+		this.scheduleReconcile();
 	}
 
 	/**
@@ -756,7 +820,7 @@ export class InkOverlayEngine {
 		const w = sf.el.clientWidth;
 		const h = sf.el.clientHeight;
 		if (w <= 0 || h <= 0) return;
-		let dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
+		let dpr = Math.min(window.devicePixelRatio || 1, this.dprCap);
 		// 总像素封顶：超高分辨率平板上防止 canvas 位图吃爆 WebView 内存
 		while (dpr > 1 && w * h * dpr * dpr > MAX_CANVAS_PIXELS) dpr -= 0.5;
 		if (w === sf.cssW && h === sf.cssH && dpr === sf.dpr) return;
@@ -785,25 +849,39 @@ export class InkOverlayEngine {
 		}
 	}
 
-	/** client 坐标 → 该页 surface 的 CSS 坐标。 */
-	private clientToCss(sf: Surface, clientX: number, clientY: number): { x: number; y: number } {
-		const rect = sf.el.getBoundingClientRect();
-		return { x: clientX - rect.left, y: clientY - rect.top };
+	/** client 坐标 → 该页 surface 的 CSS 坐标。rect 可传入已取好的包围盒。 */
+	private clientToCss(
+		sf: Surface,
+		clientX: number,
+		clientY: number,
+		rect?: DOMRect,
+	): { x: number; y: number } {
+		// ⚠️ rect 必须由调用方保证在本次事件批次内有效：getBoundingClientRect 会强制
+		// 同步布局，pdf.js 的文本层动辄上万节点，笔又以 125Hz 上报 —— 逐**合并点**
+		// 量一次布局，主线程预算就在指缝里漏光了。同一次 pointermove 的 coalesced
+		// 子点共享同一份布局，量一次即可。
+		const r = rect ?? sf.el.getBoundingClientRect();
+		return { x: clientX - r.left, y: clientY - r.top };
 	}
 
-	/** surface CSS 坐标 → PDF 用户空间。 */
-	private cssToPdf(sf: Surface, x: number, y: number): { x: number; y: number } | null {
-		const vp = this.viewportFor(sf.page);
-		if (!vp?.convertToPdfPoint) return null;
-		const [px, py] = vp.convertToPdfPoint(x, y);
+	/** surface CSS 坐标 → PDF 用户空间。vp 可传入已取好的 viewport。 */
+	private cssToPdf(
+		sf: Surface,
+		x: number,
+		y: number,
+		vp?: any,
+	): { x: number; y: number } | null {
+		const v = vp ?? this.viewportFor(sf.page);
+		if (!v?.convertToPdfPoint) return null;
+		const [px, py] = v.convertToPdfPoint(x, y);
 		return { x: px, y: py };
 	}
 
-	/** PDF 用户空间 → surface CSS 坐标。 */
-	private pdfToCss(sf: Surface, x: number, y: number): { x: number; y: number } | null {
-		const vp = this.viewportFor(sf.page);
-		if (!vp?.convertToViewportPoint) return null;
-		const [cx, cy] = vp.convertToViewportPoint(x, y);
+	/** PDF 用户空间 → surface CSS 坐标。vp 可传入已取好的 viewport。 */
+	private pdfToCss(sf: Surface, x: number, y: number, vp?: any): { x: number; y: number } | null {
+		const v = vp ?? this.viewportFor(sf.page);
+		if (!v?.convertToViewportPoint) return null;
+		const [cx, cy] = v.convertToViewportPoint(x, y);
 		return { x: cx, y: cy };
 	}
 
@@ -1276,7 +1354,6 @@ export class InkOverlayEngine {
 			g.renderedCount = 1;
 			// 单点也先画出来（点住不动的墨点）
 			this.renderLiveIncrement(g);
-			document.body.addClass('fleur-pdf-ink-stroking');
 		} else if (tool.mode === 'eraser') {
 			g.eraseChanged = this.eraseAt(sf, pdf.x, pdf.y, tool.radius);
 			this.drawEraserCursor(sf, css.x, css.y);
@@ -1308,10 +1385,17 @@ export class InkOverlayEngine {
 	}
 
 	private finishGesture(commit: boolean): void {
+		this.finishGestureInner(commit);
+		// 收尾：待画的荧光笔预览作废（draft 已被清或被合成进 committed），
+		// 并把书写期间推迟的覆盖层对齐补跑掉。
+		this.cancelMarkerPreview();
+		this.runDeferredReconcile();
+	}
+
+	private finishGestureInner(commit: boolean): void {
 		const g = this.active;
 		if (!g) return;
 		this.active = null;
-		document.body.removeClass('fleur-pdf-ink-stroking');
 		const sf = g.surface;
 
 		if (g.tool.mode === 'scroll') {
@@ -1441,8 +1525,12 @@ export class InkOverlayEngine {
 		const events =
 			typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : ([] as PointerEvent[]);
 		const list = events.length ? events : [e];
+		// 一次事件 = 一次包围盒 + 一次 viewport：合帧里的每个子点都各量一次的话，
+		// 强制同步布局会按采样率（实测 125Hz）放大成主要开销
+		const rect = sf.el.getBoundingClientRect();
+		const vp = this.viewportFor(sf.page);
 		for (const ev of list) {
-			this.appendDrawPoint(g, ev.clientX, ev.clientY, ev.pressure, ev.pointerType);
+			this.appendDrawPoint(g, ev.clientX, ev.clientY, ev.pressure, ev.pointerType, rect, vp);
 		}
 	}
 
@@ -1452,11 +1540,13 @@ export class InkOverlayEngine {
 		clientY: number,
 		rawPressure: number,
 		pointerType: string,
+		rect?: DOMRect,
+		vp?: any,
 	): void {
-		const css = this.clientToCss(g.surface, clientX, clientY);
-		const pdf = this.cssToPdf(g.surface, css.x, css.y);
+		const css = this.clientToCss(g.surface, clientX, clientY, rect);
+		const pdf = this.cssToPdf(g.surface, css.x, css.y, vp);
 		if (!pdf) return;
-		this.appendPdfPoint(g, pdf, css, rawPressure, pointerType);
+		this.appendPdfPoint(g, pdf, css, rawPressure, pointerType, vp);
 	}
 
 	/**
@@ -1469,6 +1559,7 @@ export class InkOverlayEngine {
 		css: { x: number; y: number },
 		rawPressure: number,
 		pointerType: string,
+		vpIn?: any,
 	): void {
 		const stroke = g.stroke!;
 		const sf = g.surface;
@@ -1485,7 +1576,7 @@ export class InkOverlayEngine {
 		// 防重复点：与上一点几乎重合就丢弃（数字笔偶尔会连发同位置事件）
 		const lastX = stroke.pts[(n - 1) * 3];
 		const lastY = stroke.pts[(n - 1) * 3 + 1];
-		const vp = this.viewportFor(sf.page);
+		const vp = vpIn ?? this.viewportFor(sf.page);
 		if (vp?.scale) {
 			const dCss = Math.hypot((pdf.x - lastX) * vp.scale, (pdf.y - lastY) * vp.scale);
 			if (dCss < 0.35) return;
@@ -1506,10 +1597,10 @@ export class InkOverlayEngine {
 
 		if (stroke.kind === 'marker') {
 			// 荧光笔：整条路径单次描边（交叉处不叠加变深），每次重画在 draft 上预览
-			this.previewMarker(sf, stroke);
+			this.scheduleMarkerPreview(sf, stroke);
 		} else {
 			// 钢笔：只画新增线段（增量），长笔画不重算
-			this.renderLiveIncrement(g);
+			this.renderLiveIncrement(g, vp);
 		}
 	}
 
@@ -1521,8 +1612,9 @@ export class InkOverlayEngine {
 		widths: number[],
 		i: number,
 		scale: number,
+		vp?: any,
 	): void {
-		const p = this.pdfToCss(sf, s.pts[i * 3], s.pts[i * 3 + 1]);
+		const p = this.pdfToCss(sf, s.pts[i * 3], s.pts[i * 3 + 1], vp);
 		if (!p) return;
 		ctx.fillStyle = s.color;
 		ctx.beginPath();
@@ -1545,14 +1637,15 @@ export class InkOverlayEngine {
 		widths: number[],
 		i: number,
 		scale: number,
+		vp?: any,
 	): void {
 		if (!hasGapBefore(s, i)) return;
-		this.paintDot(ctx, sf, s, widths, i, scale);
-		if (i === 1) this.paintDot(ctx, sf, s, widths, 0, scale);
+		this.paintDot(ctx, sf, s, widths, i, scale, vp);
+		if (i === 1) this.paintDot(ctx, sf, s, widths, 0, scale, vp);
 	}
 
 	/** 把笔画从 renderedCount 起的新增线段画进 committed 层。 */
-	private renderLiveIncrement(g: ActiveGesture): void {
+	private renderLiveIncrement(g: ActiveGesture, vpIn?: any): void {
 		const stroke = g.stroke!;
 		const sf = g.surface;
 		const widths = g.strokeWidths!;
@@ -1560,7 +1653,7 @@ export class InkOverlayEngine {
 		const from = g.renderedCount ?? 1;
 		if (n === from) return;
 		const ctx = sf.cctx;
-		const vp = this.viewportFor(sf.page);
+		const vp = vpIn ?? this.viewportFor(sf.page);
 		if (!vp) return;
 		const scale = vp.scale;
 		ctx.save();
@@ -1570,11 +1663,11 @@ export class InkOverlayEngine {
 		for (let i = Math.max(1, from); i < n; i++) {
 			// 断点段不落墨（gap = 归并但不连线），与 paintStroke 用同一条规则
 			if (hasGapBefore(stroke, i)) {
-				this.paintGapDots(ctx, sf, stroke, widths, i, scale);
+				this.paintGapDots(ctx, sf, stroke, widths, i, scale, vp);
 				continue;
 			}
-			const a = this.pdfToCss(sf, stroke.pts[(i - 1) * 3], stroke.pts[(i - 1) * 3 + 1]);
-			const b = this.pdfToCss(sf, stroke.pts[i * 3], stroke.pts[i * 3 + 1]);
+			const a = this.pdfToCss(sf, stroke.pts[(i - 1) * 3], stroke.pts[(i - 1) * 3 + 1], vp);
+			const b = this.pdfToCss(sf, stroke.pts[i * 3], stroke.pts[i * 3 + 1], vp);
 			if (!a || !b) continue;
 			ctx.lineWidth = Math.max(0.5, ((widths[i - 1] + widths[i]) / 2) * scale);
 			ctx.beginPath();
@@ -1584,7 +1677,7 @@ export class InkOverlayEngine {
 		}
 		if (from === 1 && n === 1) {
 			// 只有一个点：画墨点
-			const p0 = this.pdfToCss(sf, stroke.pts[0], stroke.pts[1]);
+			const p0 = this.pdfToCss(sf, stroke.pts[0], stroke.pts[1], vp);
 			if (p0) {
 				ctx.fillStyle = stroke.color;
 				ctx.beginPath();
@@ -1594,6 +1687,39 @@ export class InkOverlayEngine {
 		}
 		ctx.restore();
 		g.renderedCount = n;
+	}
+
+	/**
+	 * 荧光笔预览合帧。
+	 *
+	 * ⚠️ 预览是「清空 draft 整层 + 重画**整条**路径」，代价按 已有点数 × 每帧 增长：
+	 * 笔的采样率（实测 125Hz）远高于屏幕刷新率，逐点重画等于把同一条路径在一帧里
+	 * 画三五遍，还把 draft 层（高 DPR 下整页几十 MB）每点清一次 —— 主线程只是发
+	 * 指令所以指针流看不出来，但栅格化排队会让墨明显拖在笔尖后面（真机「写长横线
+	 * 越写越卡」）。合帧后每帧最多一次，画的仍是同一个函数产出的同一条路径，
+	 * 落墨内容与提交结果逐字节不变。
+	 */
+	private scheduleMarkerPreview(sf: Surface, stroke: InkStroke): void {
+		this.markerPreview = { sf, stroke };
+		if (this.markerPreviewRaf !== null) return;
+		this.markerPreviewRaf = window.requestAnimationFrame(() => {
+			this.markerPreviewRaf = null;
+			const pending = this.markerPreview;
+			this.markerPreview = null;
+			// 手势已换/已结束（stroke 不再是当前笔）就别再画：否则会往已提交的 draft
+			// 层上补一层预览残影。
+			if (pending && this.active?.stroke === pending.stroke) {
+				this.previewMarker(pending.sf, pending.stroke);
+			}
+		});
+	}
+
+	private cancelMarkerPreview(): void {
+		this.markerPreview = null;
+		if (this.markerPreviewRaf !== null) {
+			window.cancelAnimationFrame(this.markerPreviewRaf);
+			this.markerPreviewRaf = null;
+		}
 	}
 
 	/** 荧光笔预览：draft 层清空重画整条路径。 */
@@ -1833,18 +1959,23 @@ export class InkOverlayEngine {
 		if (!vp) return; // 页未渲染：画不了，reconcile 会在渲染后补
 		const list = this.pages.get(sf.page);
 		if (!list) return;
-		for (const s of list) this.paintStroke(ctx, sf, s);
+		for (const s of list) this.paintStroke(ctx, sf, s, vp);
 		// 选区框画在 draft 层，而 paintPage 每次都清 draft —— 套索拖动中每次
 		// requestPaint 重绘都会把框抹掉。这里补画一次，拖动全程框不消失。
 		if (this.selection?.page === sf.page) this.drawSelection(sf);
 	}
 
-	private paintStroke(ctx: CanvasRenderingContext2D, sf: Surface, s: InkStroke): void {
+	private paintStroke(
+		ctx: CanvasRenderingContext2D,
+		sf: Surface,
+		s: InkStroke,
+		vpIn?: any,
+	): void {
 		if (s.kind === 'marker') {
 			this.paintMarkerPath(ctx, sf, s);
 			return;
 		}
-		const vp = this.viewportFor(sf.page);
+		const vp = vpIn ?? this.viewportFor(sf.page);
 		if (!vp) return;
 		const scale = vp.scale;
 		const widths = strokePointWidths(s);
@@ -1855,7 +1986,7 @@ export class InkOverlayEngine {
 		ctx.lineCap = 'round';
 		ctx.lineJoin = 'round';
 		if (n === 1) {
-			const p = this.pdfToCss(sf, s.pts[0], s.pts[1]);
+			const p = this.pdfToCss(sf, s.pts[0], s.pts[1], vp);
 			if (p) {
 				ctx.beginPath();
 				ctx.arc(p.x, p.y, Math.max(0.5, (widths[0] * scale) / 2), 0, Math.PI * 2);
@@ -1865,11 +1996,11 @@ export class InkOverlayEngine {
 			for (let i = 1; i < n; i++) {
 				// 与 renderLiveIncrement 同规则：断点段不落墨，重绘与实时增量结果一致
 				if (hasGapBefore(s, i)) {
-					this.paintGapDots(ctx, sf, s, widths, i, scale);
+					this.paintGapDots(ctx, sf, s, widths, i, scale, vp);
 					continue;
 				}
-				const a = this.pdfToCss(sf, s.pts[(i - 1) * 3], s.pts[(i - 1) * 3 + 1]);
-				const b = this.pdfToCss(sf, s.pts[i * 3], s.pts[i * 3 + 1]);
+				const a = this.pdfToCss(sf, s.pts[(i - 1) * 3], s.pts[(i - 1) * 3 + 1], vp);
+				const b = this.pdfToCss(sf, s.pts[i * 3], s.pts[i * 3 + 1], vp);
 				if (!a || !b) continue;
 				ctx.lineWidth = Math.max(0.5, ((widths[i - 1] + widths[i]) / 2) * scale);
 				ctx.beginPath();
@@ -1889,10 +2020,27 @@ export class InkOverlayEngine {
 
 	/** 供诊断：surface 数量 / 工具 / 选区状态。 */
 	get debugInfo(): Record<string, unknown> {
+		// canvasMpx = 所有覆盖层（committed+draft 两层）合计的位图像素数（百万）。
+		// 这是栅格化/合成代价的直接刻度：一页 @2.75 DPR 约 6.5M px ≈ 26MB，
+		// 挂十几页就把 GPU 纹理预算吃光，表现正是「笔照常来、画面跟不上」。
+		let mpx = 0;
+		const surfacePages: number[] = [];
+		for (const sf of this.surfaces.values()) {
+			mpx += sf.cssW * sf.cssH * sf.dpr * sf.dpr * 2;
+			surfacePages.push(sf.page);
+		}
+		surfacePages.sort((a, b) => a - b);
+		if (surfacePages.length > 24) surfacePages.length = 24;
+		const pen = this.tool.mode === 'pen' ? this.tool : null;
 		return {
 			surfaces: this.surfaces.size,
+			canvasMpx: Math.round(mpx / 1e5) / 10,
+			surfacePages,
 			strokes: Array.from(this.pages.values()).reduce((a, l) => a + l.length, 0),
 			tool: this.tool.mode,
+			penKind: pen?.kind,
+			penWidth: pen?.width,
+			opacity: pen?.opacity,
 			selection: !!this.selection,
 			palmThreshold: PALM_SIZE_THRESHOLD,
 		};

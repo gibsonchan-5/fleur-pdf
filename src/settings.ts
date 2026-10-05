@@ -121,6 +121,15 @@ export interface FleurSettings {
   /** 归并的近端距离上限（CSS px，默认 96）。新落点比这更远一律算新笔画。 */
   inkGhostNearPx?: number;
   /**
+   * 笔迹层渲染倍率（只影响显示分辨率，不影响任何笔迹数据）。
+   *
+   * auto（默认）= 跟随设备 DPR（封顶 3），最锐利，也最吃平板的栅格化/合成开销。
+   * balanced / fast = 把笔迹 canvas 的 DPR 上限压到 2 / 1.5，像素量约减一半 / 减六成。
+   * 真机书写时「笔照常来、画面跟不上」就是这类开销的表现（诊断文件的 frame-jank 记录
+   * 能证实）；换上低一档通常立刻不卡，代价是笔迹边缘略微发毛。改回 auto 即恢复原样。
+   */
+  inkRenderScale?: 'auto' | 'balanced' | 'fast';
+  /**
    * 悬浮切换器（编辑 / 手写 / 批注 三态胶囊）的位置与形态。
    *
    * 拖动后吸附到左或右边；y 存的是**视口比例**（0~1）而不是像素 ——
@@ -891,6 +900,20 @@ export class FleurSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new Setting(inkSection)
+      .setName('笔迹显示精度')
+      .setDesc('卡顿旋钮：书写时如果「笔照常来、画面跟不上」，把这一项降到「均衡」或「流畅」，笔迹层的像素量约减半或减六成，通常立刻跟手。只影响显示分辨率，笔迹数据、坐标与导出都不受影响，改回「原始」即恢复最锐利的笔迹。')
+      .addDropdown(dropdown => dropdown
+        .addOption('auto', '原始（跟随屏幕）')
+        .addOption('balanced', '均衡（推荐卡顿设备）')
+        .addOption('fast', '流畅（最省性能）')
+        .setValue(this.plugin.settings.inkRenderScale ?? 'auto')
+        .onChange(async (value) => {
+          this.plugin.settings.inkRenderScale = value as 'auto' | 'balanced' | 'fast';
+          await this.plugin.saveSettings();
+          this.plugin.inkUI?.applyInkTuning();
+        }));
+
     // ── 抬笔归并（连笔修复）──
     // 小米平板等笔固件会在连续书写中瞬时上报「抬笔 + 悬停 + 落笔」（实测 24-71ms）。
     // 1.7.5 为治断触把这类瞬时抬笔接回同一笔，代价是「有意的下一笔」也被一根线接上
@@ -903,7 +926,7 @@ export class FleurSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.inkGraceMerge = value;
           await this.plugin.saveSettings();
-          this.plugin.inkUI?.applyGraceTuning();
+          this.plugin.inkUI?.applyInkTuning();
         }));
 
     const graceNumber = (
@@ -926,7 +949,7 @@ export class FleurSettingTab extends PluginSettingTab {
             if (trimmed !== '' && (!Number.isFinite(n as number) || (n as number) <= 0)) return;
             write(n);
             await this.plugin.saveSettings();
-            this.plugin.inkUI?.applyGraceTuning();
+            this.plugin.inkUI?.applyInkTuning();
           }));
     };
 

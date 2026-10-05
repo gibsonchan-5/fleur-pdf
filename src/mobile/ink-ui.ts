@@ -136,6 +136,21 @@ export class InkUI {
 		this.eraserMode = plugin.settings.inkEraserMode ?? 'stroke';
 	}
 
+	/**
+	 * 供真机诊断（InkDebugRecorder.setProbe）：掉帧那一刻「覆盖层里有多少东西要画」。
+	 * 判定卡顿属于「输入没来」还是「画不过来」全靠这份瞬时状态：surface 张数与位图
+	 * 像素总量决定栅格化/合成代价，笔画数决定一次重绘的路径长度，savePending 说明
+	 * 当时是否正压在落盘/合并上。纯读取，不产生任何副作用。
+	 */
+	get debugInfo(): Record<string, unknown> {
+		if (!this.active) return { active: false };
+		try {
+			return { active: true, pen: this.penIndex, snapMode: this.snapMode, savePending: this.autoSaveTimer !== null, ...this.overlay.debugInfo };
+		} catch {
+			return { active: true, probeError: true };
+		}
+	}
+
 	/* ============================ 设置持久化 ============================ */
 
 	/** 从插件设置恢复笔参数。结构变化时回落默认值，保证旧数据不会让笔盒坏掉。 */
@@ -279,17 +294,18 @@ export class InkUI {
 	/* ============================ 模式切换 ============================ */
 
 	/**
-	 * 把设置里的「抬笔归并」参数推给覆盖层引擎。
+	 * 把设置里的书写相关参数推给覆盖层引擎（抬笔归并 + 笔迹层渲染倍率）。
 	 * 进入手写模式时推一次，设置页每次改动再推一次（改完立刻生效，不用退出重进）。
-	 * 数值合法性由引擎侧 normalizeTuning 统一夹区间，这里只管原样传。
+	 * 数值合法性由引擎侧 normalizeTuning / RENDER_SCALE_DPR 统一兜底，这里只管原样传。
 	 */
-	applyGraceTuning(): void {
+	applyInkTuning(): void {
 		const s = this.plugin.settings;
 		this.overlay.setGraceTuning({
 			enabled: s.inkGraceMerge !== false,
 			windowMs: s.inkGhostWindowMs,
 			nearPx: s.inkGhostNearPx,
 		});
+		this.overlay.setRenderScale(s.inkRenderScale);
 	}
 
 	async enterInk(): Promise<void> {
@@ -308,7 +324,7 @@ export class InkUI {
 		// 覆盖层引擎挂上 —— 输入 / 渲染 / 橡皮 / 套索全归它管。
 		// 不再需要 pdf.js 的编辑模式与 UIManager：这两层正是旧架构一切顽疾的来源。
 		this.overlay.attach(handle.viewer);
-		this.applyGraceTuning();
+		this.applyInkTuning();
 		this.overlay.setTool(this.currentTool());
 		this.overlay.onChange(() => {
 			// 每次数据变化（一笔提交 / 擦除 / 移动 / 撤销）都排一次空闲落盘

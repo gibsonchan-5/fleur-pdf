@@ -85,6 +85,28 @@ Then copy `main.js`, `manifest.json`, and `styles.css` to your vault's plugin fo
 - **Note Export Folder**: Specify where exported notes should be saved
 - **Sidebar Position**: Choose left or right sidebar
 
+### Mobile Handwriting (Ink) Annotations
+
+Stylus ink is rendered on the plugin's own overlay canvases and persisted in a sidecar file under
+`FleurPDF/data/` — it is never baked into your PDF, and it is only ever written to your own vault.
+
+- **Ink display precision**: rasterising and compositing the ink layer costs scale with the screen
+  DPR, so on some tablets writing feels laggy even though the pen itself reports normally (the ink
+  trails the stylus). Settings → Mobile handwriting → *Ink display precision* caps the ink layer at
+  a lower resolution (*Balanced* ≈ half the pixels, *Smooth* ≈ 40%), which usually makes it
+  responsive again. This changes **on-screen resolution only** — stroke data, coordinates, hit
+  testing and exports are unaffected, and *Native* restores full sharpness at any time.
+- **Stroke-break / lag diagnostics** (command palette → 「手写断触诊断」, mobile only): a passive,
+  command-gated recorder that samples pointer and touch timing plus frame gaps while you write, and
+  saves them to `FleurPDF/ink-debug.json` and `FleurPDF/ink-debug.md` inside your vault.
+  **These are local files; the plugin uploads nothing and has no telemetry.** What a capture
+  contains: event timestamps, the on-screen position of each sampled pointer/touch (i.e. roughly
+  where on the page you were writing), pressure/size fields, the CSS class of the touched element,
+  and small counters (how many canvases/pages/strokes are live, current pen width and opacity,
+  frame-gap durations). What it does **not** contain: PDF text, note or file contents, file names,
+  vault paths, account details, or API keys. Both files are safe to delete at any time, and the
+  recorder only runs between the two invocations of that command.
+
 ## 📖 Usage Guide
 
 ### Basic Annotations
@@ -278,6 +300,23 @@ npm run build
 - **默认下划线样式**：选择实线、虚线、点线或波浪线
 - **笔记导出文件夹**：指定导出笔记的保存位置
 - **侧边栏位置**：选择左侧或右侧边栏
+
+### 移动端手写批注
+
+手写笔迹画在插件自建的覆盖层 canvas 上，笔迹数据存在 vault 内的 `FleurPDF/data/` sidecar 文件里，
+不会写进你的 PDF 原件，也只写在你自己的 vault 中。
+
+- **笔迹显示精度**：笔迹层的栅格化与合成开销随屏幕 DPR 增长。平板上如果出现「笔的采样一切正常、
+  字却跟不上笔尖」的卡顿，可在设置 → 移动端手写批注里把这一项改为「均衡」（像素量约减半）或
+  「流畅」（约减六成），通常会立刻跟手。它**只改显示分辨率**：笔迹数据、坐标、命中测试、导出一律
+  不受影响，随时改回「原始」即可恢复最锐利的笔迹。
+- **断触 / 卡顿诊断**（命令面板 → 「手写断触诊断」，仅移动端）：一个被命令开关的被动记录器，
+  在你书写期间采样指针/触摸时序与帧间隔，写入 vault 内的 `FleurPDF/ink-debug.json` 与
+  `FleurPDF/ink-debug.md`。**这两个文件只落在本机，插件不上传任何内容，也没有遥测。**
+  记录内容：事件时间戳、每次采样的屏幕位置（大致等于你在页面上书写的地方）、压感/接触面尺寸、
+  被按到的元素 class，以及若干计数（当前挂着几页覆盖层、多少笔迹、笔的粗细与透明度、掉帧毫秒数）。
+  记录内容**不包括**：PDF 文字、笔记正文、文件名、vault 路径、账号信息、API Key。
+  两个文件随时可以整篇删除，且记录器只在该命令运行期间工作。
 
 ## 📖 使用指南
 
