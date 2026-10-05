@@ -23,6 +23,13 @@
 //   ③ 是否离开感应区：真抬笔通常把笔抬出接近高度，会有 pointerout；
 //      固件抖一下不会。设备不发这些事件时本条自然失效，由 ①② 兜住。
 //
+// 1.7.10 补第 ④ 条（真机 1.7.9 采集后）：①② 都默认「笔在快速运动中」，而小米平板上
+// 慢写实测的末端速度只有 0.01~0.25px/ms、pointerout 连短促的固件抖动也会发（32 次窗口内
+// 归并里 19 次带 out），于是 ① 几乎永不触发、③ 又把一半正常续写判成有意提笔 ——
+// 结果全落在 gap（归并不落墨）上，用户看到的就是「偶发断触」。④ 不看速度、不看感应区，
+// 只看「新落点是否在抬笔前那一笔的延长线上、且跳距很短」：这是唯一与书写快慢无关、
+// 又能把「同一笔被报丢」和「换一笔」分开的判据。
+//
 // 安全性说明：判「桥接（bridge）」才落墨，判「断点（gap）」只是把这条笔画继续
 // 分组而不画那段，最坏表现等同于 1.7.6（笔画断开）而不是新增一类瑕疵；而掌压
 // 拒止 / 手指滚动那条通道完全不经过本模块。
@@ -60,6 +67,26 @@ export interface GraceMergeTuning {
 	hoverStraighten: number;
 	/** 直度判定余量（CSS px）。 */
 	hoverStraightSlackPx: number;
+	/**
+	 * 「直行穿隙」桥接的时间上限（ms）：抬笔后多久内的共线落点仍算同一笔的直行延续。
+	 *
+	 * 它可以比 `windowMs` 长，因为**出这个长窗之外没有任何新行为**：引擎把 pointerup
+	 * 通道的宽限拉到 `max(windowMs, collinearWindowMs)`，但判定函数在 `windowMs` 之外
+	 * 只允许走「直行穿隙」这一条落墨分支，其余一律 commit —— 与拉窗之前逐字节一致。
+	 * 换句话说放宽的只是「共线短跳」这一种情形的机会，不放宽任何一条已有判据。
+	 */
+	collinearWindowMs: number;
+	/**
+	 * 「直行穿隙」桥接的跳距上限（CSS px）。
+	 * 这是这条判据的风险上界：万一判错，多画的那段最长就这么长（对比 ① 错判可以画到
+	 * `nearPx`=96px）。真机 1.7.9 采集里被它救回的 5 例跳距是 6.1~17px。
+	 */
+	collinearMaxPx: number;
+	/**
+	 * 「直行穿隙」允许的最大转角（度）：抬笔前**较长窗口**（引擎取 140ms）的运动方向
+	 * 与「最后一个接触点 → 新落点」这条弦的夹角。
+	 */
+	collinearMaxTurnDeg: number;
 }
 
 export const DEFAULT_GRACE_TUNING: GraceMergeTuning = {
@@ -76,6 +103,14 @@ export const DEFAULT_GRACE_TUNING: GraceMergeTuning = {
 	maxMerges: 4,
 	hoverStraighten: 2.2,
 	hoverStraightSlackPx: 24,
+	// 真机 1.7.9 采集定的三个数：44.5s 手写里 39 个抬笔落点中，只有 5 个是「共线短跳」
+	// （跳距 6.1~17px、抬笔 16~101ms、空中轨迹直），其余 34 个落点处方向都改了 ——
+	// 那是汉字笔画之间正常的提笔。所以窗口给到 220ms（覆盖实测最长的那次共线穿隙 154ms
+	// 并留余量），跳距只给到 18px（错判的代价上限就是一根 18px 的小尾巴），转角 40°
+	// （实测 5 例共 12°~38°，而被排除的 34 例全在 56° 以上，中间有清晰空档）。
+	collinearWindowMs: 220,
+	collinearMaxPx: 18,
+	collinearMaxTurnDeg: 40,
 };
 
 /** 一次判定的输入证据（全部是 CSS 像素 / 毫秒，尺度与用户手感一致，不随缩放变）。 */
@@ -90,6 +125,15 @@ export interface GraceMergeEvidence {
 	endSpeed: number;
 	/** 末端运动方向与新落点方向的夹角（0~180）；末端无方向记 -1（未知）。 */
 	turnDeg: number;
+	/**
+	 * 「直行穿隙」用的转角：抬笔前**较长窗口**（140ms）的运动方向与新落点方向的夹角。
+	 *
+	 * 为什么不复用 `turnDeg`：它只回看 60ms。真机实测单字笔画的接触时长中位数 ~350ms、
+	 * 弦长 6~44px，60ms 内的位移只有 1~3px，方向完全被采样抖动支配（同一批数据里
+	 * 60ms 与 120ms 窗口能差出 90°）。穿隙判据要的是「这一笔整体往哪儿走」，
+	 * 所以必须用更长的窗口重新算一次方向。无足够样本记 -1（未知，判据不成立）。
+	 */
+	collinearTurnDeg: number;
 	/** 窗口内笔是否离开过感应范围（pointerout）。 */
 	leftProximity: boolean;
 	/** 这条笔画此前已吸收的归并次数。 */
@@ -129,6 +173,11 @@ export function normalizeTuning(
 	clamp('maxMerges', 0, 16);
 	clamp('hoverStraighten', 1, 8);
 	clamp('hoverStraightSlackPx', 0, 120);
+	clamp('collinearWindowMs', 150, 400);
+	clamp('collinearMaxPx', 4, 40);
+	clamp('collinearMaxTurnDeg', 10, 90);
+	// 长窗不得短于归并窗：否则引擎按 max() 拉长了宽限、判定却永远进不到穿隙分支
+	if (out.collinearWindowMs < out.windowMs) out.collinearWindowMs = out.windowMs;
 	// 速度阈值失序（停速 ≥ 桥速）会让两条规则互相打架，按半程修正
 	if (out.stopMaxSpeed >= out.bridgeMinSpeed) {
 		out.stopMaxSpeed = Math.round(out.bridgeMinSpeed * 0.35 * 1000) / 1000;
@@ -193,10 +242,32 @@ export function classifyGraceMerge(
 	// 关掉新判定：等价 1.7.6 —— 窗口内近端一律连线续写。
 	if (!t.enabled) return ev.jumpPx <= t.nearPx ? 'bridge' : 'commit';
 
-	// 出窗 / 落点过远 / 归并次数封顶：新笔画。
+	// 归并次数封顶：两条通道都不再吸收（放在最前，长窗分支同样受它约束）。
+	if (ev.mergeCount >= t.maxMerges) return 'commit';
+
+	// ④ 直行穿隙：笔是**一路直行穿过来的** —— 跳距很短（≤collinearMaxPx）、空中轨迹直、
+	//    且新落点就在抬笔前这一笔的延长线上（140ms 窗口方向与落点弦夹角 ≤collinearMaxTurnDeg）。
+	//    与 ① 的分工：① 靠「运动中掉签」的速度证据，快写才用得上；本条不看速度，
+	//    慢写（真机实测末端速度 0.01~0.25px/ms，永远够不到 ① 的 0.55 下限）也桥接得到。
+	//    为什么敢让它越过 windowMs：有意的第二笔必然在落点处改方向（汉字笔画之间方向都不同，
+	//    实测被排除的 34 例转角全 ≥56°，与通过的 5 例 ≤38° 之间有空档），
+	//    而错判的代价被跳距上限钉死在一根 ≤18px 的小尾巴上。
+	//    悬停轨迹本身要采得到（`hoverPathPx > 0`）：桥接画的是笔的真实空中路径，
+	//    没有轨迹就退化成把两端连直的弦，那是 1.7.6 的连笔来源，这里不做。
+	const collinearHop =
+		ev.jumpPx > t.tinyHopPx &&
+		ev.jumpPx <= t.collinearMaxPx &&
+		ev.collinearTurnDeg >= 0 &&
+		ev.collinearTurnDeg <= t.collinearMaxTurnDeg &&
+		ev.hoverPathPx > 0 &&
+		ev.hoverPathPx <= ev.jumpPx * t.hoverStraighten + t.hoverStraightSlackPx;
+	if (collinearHop && ev.dtMs <= t.collinearWindowMs) return 'bridge';
+
+	// 出窗（其余判据的窗口）/ 落点过远：新笔画。
+	// ⚠️ 走到这里才检查 windowMs —— 长窗之外只可能上面那条判据落墨，其余一律按新笔画处理，
+	//    保证「拉长宽限」不改变任何一条既有判据的边界。
 	if (!(ev.dtMs <= t.windowMs)) return 'commit';
 	if (!(ev.jumpPx <= t.nearPx)) return 'commit';
-	if (ev.mergeCount >= t.maxMerges) return 'commit';
 
 	// 贴着上一个点落下：连不连线都在笔宽里，按连续处理，别浪费一次判定的风险。
 	if (ev.jumpPx <= t.tinyHopPx) return 'bridge';

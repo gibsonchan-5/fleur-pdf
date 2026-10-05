@@ -231,6 +231,10 @@ export class InkUI {
 		this.applySwitcherPos();
 		sw.toggleClass('is-collapsed', this.plugin.settings.inkSwitcherCollapsed === true);
 		this.attachSwitcherDrag(sw);
+		// 文本模式下的自动贴边（见 setAutoDocked 注释）：点别处即让路，选字时快速让路
+		document.addEventListener('pointerdown', this.onDockPointerDown, true);
+		document.addEventListener('selectionchange', this.onDockSelectionChange);
+		this.syncAutoDock();
 
 		document.body.addEventListener('click', this.onBodyClick, true);
 
@@ -267,6 +271,11 @@ export class InkUI {
 
 	unmount(): void {
 		document.body.removeEventListener('click', this.onBodyClick, true);
+		document.removeEventListener('pointerdown', this.onDockPointerDown, true);
+		document.removeEventListener('selectionchange', this.onDockSelectionChange);
+		if (this.autoDockTimer !== null) window.clearTimeout(this.autoDockTimer);
+		this.autoDockTimer = null;
+		this.autoDocked = false;
 		document.removeEventListener('visibilitychange', this.onHiddenFlush);
 		window.removeEventListener('pagehide', this.onHiddenFlush);
 		// 卸载前尽力落盘（异步发起，不阻塞卸载流程）
@@ -1069,6 +1078,80 @@ export class InkUI {
 	private syncSwitcher(): void {
 		this.editSeg?.toggleClass('is-active', !this.active);
 		this.inkSeg?.toggleClass('is-active', this.active);
+		// 每次 active 状态变化都会经过这里（mount / enterInk / exitInk / 异常回退），
+		// 自动贴边的起停就搭这趟车，不必在四处各插一句。
+		this.syncAutoDock();
+	}
+
+	/* ==================== 悬浮切换器：文本模式自动贴边 ==================== */
+
+	/**
+	 * 临时贴边态。与用户长按收起的持久态 `is-collapsed` 完全正交：
+	 * 视觉同一根把手（CSS 里两条选择器并列），但这里**不写设置**，
+	 * 进手写模式 / 用户点一下把手就无条件恢复，不会把「临时」变成「永久」。
+	 *
+	 * 为什么需要它：三段胶囊常驻在正文右侧，文本批注模式下它就是块挡路的浮层 ——
+	 * 真机反馈「菜单在还没选中文本的时候就已经弹出来，挡住了用户继续选中文本」。
+	 * 手写模式里它是工具条（笔 / 橡皮 / 套索 / 列表），一分钟都不能少，所以
+	 * `this.active` 为真时整套机制直接不生效。
+	 */
+	private autoDocked = false;
+	private autoDockTimer: number | null = null;
+	/** 文本模式下闲置多久自动贴边（够久，不至于打断「点一下列表按钮」这种连续操作）。 */
+	private static readonly DOCK_IDLE_MS = 2600;
+	/** 选区一有动静就贴边：拖原生选择手柄时 WebView 不给页面发 pointer 事件，只能靠 selectionchange。 */
+	private static readonly DOCK_SELECTING_MS = 500;
+
+	/** 点正文（含开始选字）即贴边；点胶囊自身则重新计时 / 展开。 */
+	private readonly onDockPointerDown = (e: Event): void => {
+		if (this.active) return;
+		const sw = this.toggleBtn;
+		if (!sw) return;
+		const t = e.target as HTMLElement | null;
+		if (t?.closest?.('.fleur-pdf-ink-toggle')) {
+			// 摸到胶囊 = 要用它：先展开（若正贴边），再给足闲置时间
+			this.setAutoDocked(false);
+			this.armAutoDock(InkUI.DOCK_IDLE_MS);
+			return;
+		}
+		// 点在别处：文本模式下这个入口此刻用不上，立刻贴边让路
+		this.setAutoDocked(true);
+	};
+
+	/** 选区变化（正在选字 / 拖手柄）→ 快速贴边。 */
+	private readonly onDockSelectionChange = (): void => {
+		if (this.active || this.autoDocked) return;
+		this.armAutoDock(InkUI.DOCK_SELECTING_MS);
+	};
+
+	/** 按当前状态起停贴边计时器：手写模式与不可见时一律不生效。 */
+	private syncAutoDock(): void {
+		if (this.active) {
+			this.setAutoDocked(false);
+			return;
+		}
+		this.armAutoDock(InkUI.DOCK_IDLE_MS);
+	}
+
+	private armAutoDock(ms: number): void {
+		if (this.autoDockTimer !== null) window.clearTimeout(this.autoDockTimer);
+		this.autoDockTimer = null;
+		const sw = this.toggleBtn;
+		if (!sw || this.active || sw.hasClass('is-hidden')) return;
+		// 用户已经长按收起：持久态已经把入口缩成把手了，不必再排一次
+		if (this.plugin.settings.inkSwitcherCollapsed === true) return;
+		this.autoDockTimer = window.setTimeout(() => {
+			this.autoDockTimer = null;
+			this.setAutoDocked(true);
+		}, Math.max(120, ms));
+	}
+
+	private setAutoDocked(on: boolean): void {
+		if (this.autoDocked === on) return;
+		// 拖动途中不收：把手的 14×46 命中区比胶囊小得多，正拖着突然变窄会立刻脱手
+		if (on && (this.toggleBtn?.hasClass('is-dragging') || this.active)) return;
+		this.autoDocked = on;
+		this.toggleBtn?.toggleClass('is-auto-collapsed', on);
 	}
 
 	/**
@@ -1116,6 +1199,9 @@ export class InkUI {
 	refreshVisibility(): void {
 		this.syncSwitcherVisibility();
 		this.applySwitcherPos();
+		// 设置页刚动过 → 用户正在找那个开关，此刻别把入口缩成一根把手
+		this.setAutoDocked(false);
+		this.armAutoDock(InkUI.DOCK_IDLE_MS);
 	}
 
 	/* ==================== 悬浮切换器：拖动 / 收起 ==================== */
@@ -1262,6 +1348,10 @@ export class InkUI {
 		this.plugin.settings.inkSwitcherCollapsed = collapsed;
 		void this.plugin.saveSettings().catch(() => undefined);
 		this.toggleBtn?.toggleClass('is-collapsed', collapsed);
+		// 持久化状态是用户明确表达的意图，临时贴边态就此让位：
+		// 两者叠着会让「点把手恢复」看起来没反应（is-collapsed 还在）。
+		this.setAutoDocked(false);
+		if (!collapsed) this.armAutoDock(InkUI.DOCK_IDLE_MS);
 		if (collapsed) {
 			new Notice('悬浮按钮已收起：点侧边的小把手即可恢复，也可用命令面板的「显示 / 隐藏手写批注悬浮按钮」');
 		}
@@ -1276,7 +1366,10 @@ export class InkUI {
 			s.inkSwitcherCollapsed = false;
 			void this.plugin.saveSettings().catch(() => undefined);
 			this.toggleBtn?.removeClass('is-collapsed');
+			// 命令面板喊「显示按钮」，结果只出来一根贴边把手 = 用户以为没生效
+			this.setAutoDocked(false);
 			this.syncSwitcherVisibility();
+			this.armAutoDock(InkUI.DOCK_IDLE_MS);
 			new Notice('已显示手写批注悬浮按钮');
 			return;
 		}

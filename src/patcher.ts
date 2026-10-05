@@ -193,6 +193,12 @@ export class PDFPatcher {
    */
   private static readonly SELECTION_SETTLE_MS = 600;
   /**
+   * 「还在调整选区」时下一轮的去抖：比首次的 600ms 明显长。
+   * 面板被选区变化收走说明手指还在手柄上，这时候要的是别挡路，不是快；
+   * 而一次都没打断过的正常选字仍然走 600ms，手感不变。
+   */
+  private static readonly SELECTION_ADJUST_SETTLE_MS = 1400;
+  /**
    * 当前面板若是「选区自动唤起」的，记下它对应的选区指纹；否则为空串。
    *
    * 由 hideContextMenu 统一清空。保留原因：供后续判断「面板是否由选区自动唤起」
@@ -913,11 +919,33 @@ export class PDFPatcher {
    *   · 900ms 去抖 —— 比 FleurEPUB 的 300ms 更钝，用户选完还要干等半秒。
    */
   private onSelectionChange(): void {
+    // 面板已经因为某个选区弹出，而这一次 selectionchange 的**选区内容变了** →
+    // 用户还在拖手柄调整范围。此时面板正压在选区下方（手柄要去的地方），
+    // 而拖原生手柄不给页面发 pointer 事件，面板上那句「点外部关闭」根本收不到，
+    // 于是它就一直杵着挡路（真机主诉：「菜单挡住了继续选中文本」）。
+    // 处理：立刻收走让路，并把下一轮的稳定窗拉长 —— 否则「收掉 → 600ms 后
+    // 又弹回来」会在手指底下闪成一片。选区一旦不再变化，仍按正常手感弹出。
+    let settle = PDFPatcher.SELECTION_SETTLE_MS;
+    if (this.openPanel?.isConnected && this.openAutoKey) {
+      const now = PDFPatcher.selectionKey();
+      if (now && now !== this.openAutoKey) {
+        this.hideContextMenu();
+        settle = PDFPatcher.SELECTION_ADJUST_SETTLE_MS;
+      }
+    }
     if (this.selectionMenuTimer !== null) window.clearTimeout(this.selectionMenuTimer);
     this.selectionMenuTimer = window.setTimeout(() => {
       this.selectionMenuTimer = null;
       this.syncMobileMenuWithSelection();
-    }, PDFPatcher.SELECTION_SETTLE_MS);
+    }, settle);
+  }
+
+  /** 选区指纹（与 syncMobileMenuWithSelection 的 key 同构）：空选区返回空串。 */
+  private static selectionKey(): string {
+    const sel = window.getSelection();
+    const text = sel && !sel.isCollapsed && sel.rangeCount > 0 ? sel.toString().trim() : '';
+    if (!text) return '';
+    return `${ text.length }|${ text.slice(0, 48) }`;
   }
 
   /**
@@ -964,7 +992,7 @@ export class PDFPatcher {
     // 同一段选区且面板已经开着 → 原样保持，不重建（重建会让面板闪一下）。
     // 注意条件里必须带 `this.openPanel`：旧版只比 key，而 key 一旦记下就永不清空，
     // 于是「同一段文字第二次选中」时菜单根本不出现，用户以为功能又坏了。
-    const key = `${ text.length }|${ text.slice(0, 48) }`;
+    const key = PDFPatcher.selectionKey();
     if (key === this.lastAutoMenuKey && this.openPanel?.isConnected) return;
     this.lastAutoMenuKey = key;
 

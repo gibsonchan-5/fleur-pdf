@@ -73,6 +73,16 @@ const CANCEL_GRACE_MS = 1200;
 const REBIND_NEAR_PX = 16;
 
 /**
+ * 「直行穿隙」判据（grace-merge ④）回看多久来估这一笔的方向（ms）。
+ *
+ * 不能用 ① 那个 60ms 窗口：真机实测一笔的接触时长中位数 ~350ms、弦长只有 6~44px，
+ * 60ms 内的位移常常不到 3px，方向完全被采样抖动支配（同一批数据里 60ms 与 120ms
+ * 窗口能差出 90°）。140ms 是「够长到压住抖动」与「够短到不跨进上一笔」的折中，
+ * 也是 recentRaw 缓冲（24 点 ≈ 真机 8ms 采样节奏下的 190ms）能稳定支撑的长度。
+ */
+const COLLINEAR_DIR_SPAN_MS = 140;
+
+/**
  * 幽灵抬笔归并窗口（ms）与近端距离（CSS px）的**默认值**见
  * grace-merge.ts 的 DEFAULT_GRACE_TUNING（150ms / 96px），可被设置项覆盖。
  *
@@ -944,6 +954,9 @@ export class InkOverlayEngine {
 			const jumpY = css.y - (g.recentRaw?.[g.recentRaw.length - 1]?.y ?? css.y);
 			const hover = g.graceHover ?? [];
 			const motion = terminalMotion(g.recentRaw ?? []);
+			// ④ 的方向证据：同样的点、更长的窗口（见 COLLINEAR_DIR_SPAN_MS 注释）。
+			// 缓冲里不足 2 个点或跨度不够时 terminalMotion 返回 -1，判据自然不成立。
+			const motionSlow = terminalMotion(g.recentRaw ?? [], COLLINEAR_DIR_SPAN_MS);
 			window.clearTimeout(this.cancelTimer);
 			this.cancelTimer = null;
 
@@ -958,6 +971,7 @@ export class InkOverlayEngine {
 							hoverPathPx: pathLengthPx(hover),
 							endSpeed: motion.endSpeed,
 							turnDeg: angleBetweenDeg(motion.dirX, motion.dirY, jumpX, jumpY),
+							collinearTurnDeg: angleBetweenDeg(motionSlow.dirX, motionSlow.dirY, jumpX, jumpY),
 							leftProximity: !!g.leftProximity,
 							mergeCount: g.mergeCount ?? 0,
 						},
@@ -1100,7 +1114,8 @@ export class InkOverlayEngine {
 	 *
 	 * 同时存 CSS 坐标（判定的距离尺度，与用户手感一致、不随缩放变）和 PDF 坐标
 	 * （判 bridge 时按**真实路径**落墨，而不是把两端连成一根弦 —— 那根弦就是连笔）。
-	 * 上限 24 点：窗口最长 400ms，再多对直度判定没有增量信息，丢最早的。
+	 * 上限 32 点（滚动丢弃最早的）：够覆盖最长的穿隙窗 collinearWindowMs=220ms
+	 * （真机悬停采样间隔 p50≈8ms），再多对直度判定没有增量信息。
 	 */
 	private sampleGraceHover(g: ActiveGesture, e: PointerEvent): void {
 		if (!g.stroke) return;
@@ -1112,7 +1127,9 @@ export class InkOverlayEngine {
 		const at = performance.now();
 		const pdf = this.cssToPdf(g.surface, css.x, css.y);
 		arr.push({ x: css.x, y: css.y, at, px: pdf?.x ?? 0, py: pdf?.y ?? 0 });
-		if (arr.length > 24) arr.shift();
+		// 32 个采样：窗口最长是 collinearWindowMs（默认 220ms），真机悬停采样间隔 p50=8ms，
+		// 24 个只够 190ms —— 会把最长那次穿隙的轨迹截掉，桥接出来的线就短一截。
+		if (arr.length > 32) arr.shift();
 	}
 
 	private onPointerUp = (e: PointerEvent): void => {
@@ -1129,10 +1146,13 @@ export class InkOverlayEngine {
 			g.graceHover = [];
 			g.leftProximity = false;
 			if (this.cancelTimer !== null) window.clearTimeout(this.cancelTimer);
+			// 宽限拉到 max(归并窗, 直行穿隙窗)：穿隙判据（grace-merge ④）允许比 windowMs
+			// 更长的抬笔间隔，但它 outside windowMs 是判定函数里唯一的例外分支 ——
+			// 出归并窗后除「共线短跳」外一律 commit，行为与拉窗之前一致。
 			this.cancelTimer = window.setTimeout(() => {
 				this.cancelTimer = null;
 				this.finishGesture(true);
-			}, this.grace.windowMs);
+			}, Math.max(this.grace.windowMs, this.grace.collinearWindowMs));
 			return;
 		}
 		this.finishGesture(true);
@@ -1570,7 +1590,9 @@ export class InkOverlayEngine {
 		// 留下「没动」的痕迹，terminalMotion 才读得出低末端速度。
 		const raw = g.recentRaw ?? (g.recentRaw = []);
 		raw.push({ x: css.x, y: css.y, at: performance.now() });
-		if (raw.length > 16) raw.shift();
+		// 24 点：既要喂 60ms 的速度证据（①），也要喂 COLLINEAR_DIR_SPAN_MS 的方向证据（④）。
+		// 真机 move 间隔 p50=8ms 时 24 点 ≈ 190ms，两条都够；旧值 16 点只到 128ms。
+		if (raw.length > 24) raw.shift();
 
 		const n = stroke.pts.length / 3;
 		// 防重复点：与上一点几乎重合就丢弃（数字笔偶尔会连发同位置事件）
