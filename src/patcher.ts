@@ -6,7 +6,7 @@
 //   2. 每页内：DOM 交集遍历定位 segments；失败则降级为文本匹配
 //   3. 应用时 segments 若已失效（节点被 PDF.js 重渲染），按页内文本重新匹配
 //   4. 恢复时：跨页标注先按页切分文本，再逐页匹配
-import { Menu, Modal, Notice, setIcon } from 'obsidian';
+import { Menu, Modal, Notice, Platform, setIcon } from 'obsidian';
 import type FleurPDFPlugin from './main';
 import type { Annotation } from './types';
 import { AIChatPanel } from './ai-chat-modal';
@@ -885,6 +885,19 @@ export class PDFPatcher {
     if (snapshot && snapshot.text) {
       e.preventDefault();
       e.stopPropagation();
+      // 真机移动端：长按选词时 WebView 会**先**派发 contextmenu（此刻选区就是
+      // 刚选中的那个词），走下面的近点定位就近弹出；约 300ms 后 selectionchange
+      // 稳定，自动路径又弹一次底部居中 —— 真机表现即「先就近、很快变居中」，
+      // 每次选词都跳一遍。修法：真机上把长按菜单并入选区自动唤起通道（autoKey
+      // 非空 ⇒ 同款底部居中定位 + 同款「选区变化即收起」），一次弹出不再跳位；
+      // 同时登记选区指纹，稳定判定跑 syncMobileMenuWithSelection 时同指纹
+      // 不再重建面板（否则仍会闪一次）。桌面端右键近点语义不变。
+      if (Platform.isMobile) {
+        const autoKey = PDFPatcher.selectionKey();
+        if (autoKey) this.lastAutoMenuKey = autoKey;
+        void this.showContextMenu(e.clientX, e.clientY, snapshot, hitAnnIds, autoKey || 'ctx');
+        return;
+      }
       void this.showContextMenu(e.clientX, e.clientY, snapshot, hitAnnIds);
       return;
     }
