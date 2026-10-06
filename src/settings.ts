@@ -121,12 +121,6 @@ export interface FleurSettings {
   /** 归并的近端距离上限（CSS px，默认 96）。新落点比这更远一律算新笔画。 */
   inkGhostNearPx?: number;
   /**
-   * 悬停续写窗（ms，默认 220）：抬笔后多久内、宽限窗里采到过悬停轨迹（笔没离开
-   * 感应区）且落点在近端，就按真实悬停轨迹接回同一笔。治「慢写时方向一变就断触」
-   * —— 固件幽灵抬笔的 dt 实测全部 ≤168ms，有意提笔 ≥233ms，220 坐在空档里。
-   */
-  inkHoverJoinWindowMs?: number;
-  /**
    * 笔迹层渲染倍率（只影响显示分辨率，不影响任何笔迹数据）。
    *
    * auto（默认）= 跟随设备 DPR（封顶 3），最锐利，也最吃平板的栅格化/合成开销。
@@ -961,7 +955,7 @@ export class FleurSettingTab extends PluginSettingTab {
 
     graceNumber(
       '归并窗口（毫秒）',
-      '抬笔后多久之内落笔才算同一笔。默认 150：真机实测瞬时抬笔都在 71ms 内，有意提笔都在 384ms 以上。调大会把有意笔画也并进来，调小会重新出现断触。慢写方向突变的断触由下方「悬停续写窗」兜住。',
+      '抬笔后多久之内落笔才算同一笔。默认 150：真机实测瞬时抬笔都在 71ms 内，有意提笔都在 384ms 以上。调大会把有意笔画也并进来，调小会重新出现断触。',
       '150',
       () => this.plugin.settings.inkGhostWindowMs,
       (v) => { this.plugin.settings.inkGhostWindowMs = v; },
@@ -972,13 +966,6 @@ export class FleurSettingTab extends PluginSettingTab {
       '96',
       () => this.plugin.settings.inkGhostNearPx,
       (v) => { this.plugin.settings.inkGhostNearPx = v; },
-    );
-    graceNumber(
-      '悬停续写窗（毫秒）',
-      '抬笔后多久之内、只要笔的悬停轨迹还在（没离开感应区）就把重落接回同一笔，并画出笔真实的空中路径。默认 220：实测固件幽灵抬笔都在 168ms 内，有意提笔都在 233ms 以上。只在移动端手写生效。',
-      '220',
-      () => this.plugin.settings.inkHoverJoinWindowMs,
-      (v) => { this.plugin.settings.inkHoverJoinWindowMs = v; },
     );
 
     // ── 悬浮按钮：整体显隐 ──

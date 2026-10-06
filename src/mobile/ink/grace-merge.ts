@@ -30,13 +30,6 @@
 // 只看「新落点是否在抬笔前那一笔的延长线上、且跳距很短」：这是唯一与书写快慢无关、
 // 又能把「同一笔被报丢」和「换一笔」分开的判据。
 //
-// 1.7.11 补第 ⑤ 条（真机 1.7.10 采集后）：④ 的「延长线」前提对慢写不成立——汉字笔画
-// 之间本来就要换方向（实测幽灵重落转角 77~173°）。但同一批数据里 68 次抬笔重落的
-// dt 分布双峰干净：固件幽灵重落全部 ≤168ms、有意提笔全部 ≥233ms。⑤ 因此以「宽限窗
-// 里采到了悬停轨迹」为主证据（笔全程没离开 digitizer 视野，固件只是把接触签报丢了、
-// 顺手重编了 pointerId 并紧跟 up 发 out），dt 窗口卡在双峰空档 220ms，落墨画真实
-// 悬停轨迹。引擎侧配套改动见 overlay-engine.ts 的宽限采样注释。
-//
 // 安全性说明：判「桥接（bridge）」才落墨，判「断点（gap）」只是把这条笔画继续
 // 分组而不画那段，最坏表现等同于 1.7.6（笔画断开）而不是新增一类瑕疵；而掌压
 // 拒止 / 手指滚动那条通道完全不经过本模块。
@@ -68,12 +61,7 @@ export interface GraceMergeTuning {
 	maxTurnDeg: number;
 	/** 判「有意的收笔」所需的最小抬笔时长（ms）：比这更短，速度再低也更像固件抖动。 */
 	minRealLiftMs: number;
-	/**
-	 * 一条笔画最多吸收几次归并（防级联：没有上限时一笔能串起一整行字）。
-	 * 1.7.11 从 4 放宽到 8：真机 1.7.10 实测固件能在 850ms 里连丢 5 次接触签，
-	 * 旧封顶会在第 5 次重落时留下残余断点；而每条归并通道现在都有物理证据
-	 * 门槛（①速度 ④共线 ⑤悬停轨迹），级联风险远低于 1.7.6 的无条件近端连线。
-	 */
+	/** 一条笔画最多吸收几次归并（防级联：没有上限时一笔能串起一整行字）。 */
 	maxMerges: number;
 	/** 悬停轨迹直度上限：轨迹累计长度超过「跳距×此系数 + 余量」说明笔在窝里绕，不是直着走。 */
 	hoverStraighten: number;
@@ -99,20 +87,6 @@ export interface GraceMergeTuning {
 	 * 与「最后一个接触点 → 新落点」这条弦的夹角。
 	 */
 	collinearMaxTurnDeg: number;
-	/**
-	 * 「悬停续写」桥接的时间上限（ms）：抬笔后多久内，只要宽限窗里**采到了悬停轨迹**
-	 * （笔根本没离开感应区，固件只是把接触签报丢了）且落点在近端，就判同一笔并按
-	 * 真实悬停轨迹落墨。
-	 *
-	 * 依据（真机 1.7.10 采集，1.7.11 定值）：68 次抬笔重落里，固件幽灵重落全部落在
-	 * 14~168ms（30 次），有意提笔全部 ≥233ms（38 次，中位 434ms）——空档清晰。
-	 * 220ms 坐在空档里：比最长的幽灵抬笔留 52ms 余量，距最短的有意提笔仍有 13ms。
-	 * 悬停轨迹是比 dt 更硬的物理证据：笔能在空中画出连续轨迹，就说明 digitizer 一直
-	 * 看得见它——「离开纸面又回来」的有意提笔在轨迹上必然表现为提笔前后的两段接触，
-	 * 中间的悬停段又短又少。没有悬停采样的设备上本判据自动失效（hoverPathPx=0），
-	 * 行为与 1.7.10 一致。
-	 */
-	hoverJoinWindowMs: number;
 }
 
 export const DEFAULT_GRACE_TUNING: GraceMergeTuning = {
@@ -126,7 +100,7 @@ export const DEFAULT_GRACE_TUNING: GraceMergeTuning = {
 	stopMaxSpeed: 0.18,
 	maxTurnDeg: 60,
 	minRealLiftMs: 90,
-	maxMerges: 8,
+	maxMerges: 4,
 	hoverStraighten: 2.2,
 	hoverStraightSlackPx: 24,
 	// 真机 1.7.9 采集定的三个数：44.5s 手写里 39 个抬笔落点中，只有 5 个是「共线短跳」
@@ -137,8 +111,6 @@ export const DEFAULT_GRACE_TUNING: GraceMergeTuning = {
 	collinearWindowMs: 220,
 	collinearMaxPx: 18,
 	collinearMaxTurnDeg: 40,
-	// 真机 1.7.10 采集定的值：幽灵重落 dt 全部 ≤168ms、有意提笔全部 ≥233ms（见字段注释）。
-	hoverJoinWindowMs: 220,
 };
 
 /** 一次判定的输入证据（全部是 CSS 像素 / 毫秒，尺度与用户手感一致，不随缩放变）。 */
@@ -204,11 +176,8 @@ export function normalizeTuning(
 	clamp('collinearWindowMs', 150, 400);
 	clamp('collinearMaxPx', 4, 40);
 	clamp('collinearMaxTurnDeg', 10, 90);
-	clamp('hoverJoinWindowMs', 100, 400);
 	// 长窗不得短于归并窗：否则引擎按 max() 拉长了宽限、判定却永远进不到穿隙分支
 	if (out.collinearWindowMs < out.windowMs) out.collinearWindowMs = out.windowMs;
-	// 同理：悬停续写窗短于归并窗没有意义（短窗情形 windowMs 分支本来就覆盖）
-	if (out.hoverJoinWindowMs < out.windowMs) out.hoverJoinWindowMs = out.windowMs;
 	// 速度阈值失序（停速 ≥ 桥速）会让两条规则互相打架，按半程修正
 	if (out.stopMaxSpeed >= out.bridgeMinSpeed) {
 		out.stopMaxSpeed = Math.round(out.bridgeMinSpeed * 0.35 * 1000) / 1000;
@@ -293,21 +262,6 @@ export function classifyGraceMerge(
 		ev.hoverPathPx > 0 &&
 		ev.hoverPathPx <= ev.jumpPx * t.hoverStraighten + t.hoverStraightSlackPx;
 	if (collinearHop && ev.dtMs <= t.collinearWindowMs) return 'bridge';
-
-	// ⑤ 悬停续写（1.7.11，真机 1.7.10 采集定性）：窗口里**采到了悬停轨迹** =
-	//    digitizer 全程看得见这支笔，固件只是把接触签报丢了（还顺手重编了 pointerId、
-	//    紧跟 up 发了 out）。这样的重落不可能是「提笔-移动-落笔」的有意换笔——
-	//    笔从未离开过纸面上方。判据与快慢无关：慢写（实测末端速度 0.01~0.35px/ms）
-	//    用不上 ①，方向又改了（汉字笔画间转角 77~173°）用不上 ④，本条全兜住。
-	//    落墨画的是**真实悬停轨迹**：那是笔尖在空中实际走过的路，不是替用户画的弦。
-	//    轨迹直度沿用 ①④ 的比值上界：轨迹比跳距长得多说明笔在窝里绕，画出来不是
-	//    用户预期的那条线，退回 gap（归并语义保住、这段不落墨）。没有悬停采样的
-	//    设备（hoverPathPx=0）本条自然失效，其余判据原样兜底。
-	const hoverJoin =
-		ev.hoverPathPx > 0 &&
-		ev.jumpPx <= t.nearPx &&
-		ev.hoverPathPx <= ev.jumpPx * t.hoverStraighten + t.hoverStraightSlackPx;
-	if (hoverJoin && ev.dtMs <= t.hoverJoinWindowMs) return 'bridge';
 
 	// 出窗（其余判据的窗口）/ 落点过远：新笔画。
 	// ⚠️ 走到这里才检查 windowMs —— 长窗之外只可能上面那条判据落墨，其余一律按新笔画处理，

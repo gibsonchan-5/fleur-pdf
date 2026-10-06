@@ -306,7 +306,6 @@ export class InkUI {
 			enabled: s.inkGraceMerge !== false,
 			windowMs: s.inkGhostWindowMs,
 			nearPx: s.inkGhostNearPx,
-			hoverJoinWindowMs: s.inkHoverJoinWindowMs,
 		});
 		this.overlay.setRenderScale(s.inkRenderScale);
 	}
