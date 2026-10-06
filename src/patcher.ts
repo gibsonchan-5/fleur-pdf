@@ -207,6 +207,13 @@ export class PDFPatcher {
   private openAutoKey = '';
   /** 最近一次自动弹出的选区指纹 —— 同一选区不重复弹。 */
   private lastAutoMenuKey = '';
+  /**
+   * 移动端选区菜单的记忆位置（1.7.15）：用户拖拽把手后记录面板左上角（CSS px），
+   * 之后每次自动弹出都落在这里，而不是默认的屏幕底部居中。会话级 —— 存在插件实例
+   * 字段里，不写 data.json：面板是临时 UI，重启回默认位置是合理锚点，也让「拖动
+   * 记忆」这个行为不产生任何持久化数据。没拖过为 null → 维持 1.7.12 的底部居中。
+   */
+  private mobileMenuPos: { x: number; y: number } | null = null;
   /** 当前打开的浮动面板（同一时刻只允许一个，选区连续变化时会重建）。 */
   private openPanel: HTMLElement | null = null;
   /** 当前面板「点击外部关闭」的监听器，由 hideContextMenu 统一摘除。 */
@@ -1327,10 +1334,17 @@ export class PDFPatcher {
       // 1.7.11：选区自动唤起的菜单默认**屏幕底部居中**。旧逻辑贴着选区下缘弹
       // （rect.bottom+44 再夹视口），选区一落到屏幕下半部分，面板就被夹回来
       // 压住正文和选择滑杆 —— 真机反馈「就近弹出干扰选中文本」。底部居中是
-      // 阅读器的通行做法（微信读书同款），天然远离滑杆与选区；把手拖走能力
-      // 保留，但拖动不持久化，下次弹出仍回底部（面板随选区重建）。
-      posX = (vw - panelRect.width) / 2;
-      posY = vh - panelRect.height - 8;
+      // 阅读器的通行做法（微信读书同款），天然远离滑杆与选区。
+      // 1.7.15：用户拖拽把手后记住落点，之后每次弹出都落在记忆位置（夹紧当前
+      // 视口）—— 拖走是用户对「我想让它待在哪」的直接表达，该被记住。
+      const saved = this.mobileMenuPos;
+      if (saved) {
+        posX = Math.max(8, Math.min(saved.x, vw - panelRect.width - 8));
+        posY = Math.max(8, Math.min(saved.y, vh - panelRect.height - 8));
+      } else {
+        posX = (vw - panelRect.width) / 2;
+        posY = vh - panelRect.height - 8;
+      }
     } else {
       if (_x + panelRect.width > vw - 8) {
         posX = vw - panelRect.width - 8;
@@ -1349,8 +1363,9 @@ export class PDFPatcher {
    * 选区菜单面板拖拽（只认把手）。
    *
    * pointer capture 拖动：move 里按「起点面板位置 + 指针位移」重设 left/top，
-   * 并夹紧到视口内（留 8px 边距）。不持久化 —— 面板随选区即时重建，
-   * 每次弹出都回到默认位置，拖动只是当次的临时避让。
+   * 并夹紧到视口内（留 8px 边距）。1.7.15 起拖拽结束把最终落点记进
+   * mobileMenuPos —— 之后每次弹出都落在那里（会话级记忆，见字段注释）；
+   * showContextMenu 同样夹紧视口，屏幕旋转 / 分屏后不会丢到看不见的地方。
    */
   private attachPanelDrag(panel: HTMLElement, grip: HTMLElement): void {
     let dragging = false;
@@ -1386,6 +1401,13 @@ export class PDFPatcher {
     const end = (e: PointerEvent) => {
       if (!dragging || e.pointerId !== pointerId) return;
       dragging = false;
+      // 1.7.15：拖拽结束记录落点（面板实际渲染位置），下次自动弹出复用。
+      // 只在面板仍是当前打开面板时记 —— 若拖拽期间面板已被选区变化重建，
+      // 这块旧 DOM 的位置不代表用户对**新面板**的意图。
+      if (this.openPanel === panel) {
+        const rect = panel.getBoundingClientRect();
+        this.mobileMenuPos = { x: rect.left, y: rect.top };
+      }
       try {
         grip.releasePointerCapture(e.pointerId);
       } catch {
