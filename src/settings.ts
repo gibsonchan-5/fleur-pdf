@@ -929,44 +929,9 @@ export class FleurSettingTab extends PluginSettingTab {
           this.plugin.inkUI?.applyInkTuning();
         }));
 
-    const graceNumber = (
-      name: string,
-      desc: string,
-      placeholder: string,
-      read: () => number | undefined,
-      write: (v: number | undefined) => void,
-    ) => {
-      new Setting(inkSection)
-        .setName(name)
-        .setDesc(desc)
-        .addText(text => text
-          .setPlaceholder(placeholder)
-          .setValue(String(read() ?? ''))
-          .onChange(async (value) => {
-            const trimmed = value.trim();
-            const n = trimmed === '' ? undefined : Number(trimmed);
-            // 空 = 用默认值；非数字 = 不改（避免把 NaN 写进 data.json）
-            if (trimmed !== '' && (!Number.isFinite(n as number) || (n as number) <= 0)) return;
-            write(n);
-            await this.plugin.saveSettings();
-            this.plugin.inkUI?.applyInkTuning();
-          }));
-    };
-
-    graceNumber(
-      '归并窗口（毫秒）',
-      '抬笔后多久之内落笔才算同一笔。默认 150：真机实测瞬时抬笔都在 71ms 内，有意提笔都在 384ms 以上。调大会把有意笔画也并进来，调小会重新出现断触。',
-      '150',
-      () => this.plugin.settings.inkGhostWindowMs,
-      (v) => { this.plugin.settings.inkGhostWindowMs = v; },
-    );
-    graceNumber(
-      '归并距离（像素）',
-      '落笔点离上一个点多远以内才可能算同一笔。默认 96（屏幕像素，与缩放无关）。调大更容易连笔，调小更容易断。',
-      '96',
-      () => this.plugin.settings.inkGhostNearPx,
-      (v) => { this.plugin.settings.inkGhostNearPx = v; },
-    );
+    // 1.7.17：归并窗口 / 归并距离两个数值项从设置页移除（真机反馈页面冗余）。
+    // 引擎仍读取 data.json 里的 inkGhostWindowMs / inkGhostNearPx（老用户自定义值
+    // 继续生效，没改过就走默认 150 / 96），只是不再提供 UI 入口。
 
     // ── 悬浮按钮：整体显隐 ──
     // 按钮只在打开 PDF 时出现（运行期自动判定，不占这一栏）；这里管的是「即便在 PDF 里也不想看到它」。
