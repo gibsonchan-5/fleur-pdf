@@ -419,7 +419,7 @@ export class InkUI {
 						migrated++;
 					}
 				}
-				console.log(`[FleurPDF Ink] 已迁移 0.5.x 笔迹 ${migrated}/${loaded.legacy.entries.length} 条`);
+				console.debug(`[FleurPDF Ink] 已迁移 0.5.x 笔迹 ${migrated}/${loaded.legacy.entries.length} 条`);
 			}
 		} catch (err) {
 			console.warn('[FleurPDF Ink] 读取手写数据失败（不影响新书写）:', err);
@@ -431,7 +431,7 @@ export class InkUI {
 			if (res.strokes.length) {
 				strokes = strokes.concat(res.strokes);
 				for (const id of res.ids) claimed.add(id);
-				console.log(`[FleurPDF Ink] 已接管 PDF 固有手写笔迹 ${res.strokes.length} 条`);
+				console.debug(`[FleurPDF Ink] 已接管 PDF 固有手写笔迹 ${res.strokes.length} 条`);
 			}
 		} catch (err) {
 			console.warn('[FleurPDF Ink] 接管固有笔迹失败（下一轮重试）:', err);
@@ -665,7 +665,7 @@ export class InkUI {
 		try {
 			await this.inkStore.save(file, strokes, Array.from(this.claimedIds), this.deleted);
 			this.lastSavedJson = json;
-			console.log(`[FleurPDF Ink] 视图已销毁，已用内存快照补存 ${strokes.length} 条笔迹`);
+			console.debug(`[FleurPDF Ink] 视图已销毁，已用内存快照补存 ${strokes.length} 条笔迹`);
 			return true;
 		} catch (err) {
 			console.warn('[FleurPDF Ink] 快照补存失败:', err);

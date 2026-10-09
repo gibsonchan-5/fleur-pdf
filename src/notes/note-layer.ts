@@ -226,15 +226,23 @@ export class NoteLayer {
   }
 
   private applyGeometry(note: PDFNote, el: HTMLElement, scale: number): void {
-    el.style.left = `${note.x * scale}px`;
-    el.style.top = `${note.y * scale}px`;
+    // 审核规则 obsidianmd/no-static-styles-assignment：不直接写 el.style，统一走 setCssStyles；
+    // 折叠态的 width:auto / height:22px 交给 .is-collapsed 的 CSS 规则（这里清空展开态
+    // 留下的行内尺寸，规则才能生效），展开尺寸在数据里原样记忆，展开即恢复。
     if (note.collapsed === true) {
-      // 折叠 = 小脚注：宽随内容收缩（摘要 CSS 限宽），w/h 里的展开尺寸原样记忆
-      el.style.width = 'auto';
-      el.style.height = `${NOTE_FOLD_H}px`;
+      el.setCssStyles({
+        left: `${note.x * scale}px`,
+        top: `${note.y * scale}px`,
+        width: '',
+        height: '',
+      });
     } else {
-      el.style.width = `${note.w * scale}px`;
-      el.style.height = `${note.h * scale}px`;
+      el.setCssStyles({
+        left: `${note.x * scale}px`,
+        top: `${note.y * scale}px`,
+        width: `${note.w * scale}px`,
+        height: `${note.h * scale}px`,
+      });
     }
   }
 

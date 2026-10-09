@@ -4345,6 +4345,14 @@ body.fleur-pdf-mobile .fleur-pdf-note-tools .fleur-pdf-ink-switch-btn svg {
   height: 100%;
   justify-content: flex-end;
 }
+/* 折叠态几何（小脚注条）：宽随内容收缩、高固定横条。
+   审核要求静态样式一律走 CSS（no-static-styles-assignment），
+   TS 侧折叠时只清空行内 width/height 让这里生效。
+   22px 与 note-layer.ts 的 NOTE_FOLD_H（拖拽钳制用）保持一致。 */
+.fleur-pdf-note.is-collapsed {
+  width: auto;
+  height: 22px;
+}
 /* 折叠箭头：与删除键同款幽灵钮，各占独立点击目标（点箭头绝不触发拖拽） */
 .fleur-pdf-note-fold {
   flex: 0 0 auto;

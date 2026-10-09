@@ -250,7 +250,7 @@ export class PDFPatcher {
   }
 
   install() {
-    console.log('[FleurPDF] patcher installed (text-anchored v2)');
+    console.debug('[FleurPDF] patcher installed (text-anchored v2)');
 
     this.boundContextMenu = (e: MouseEvent) => this.onContextMenu(e);
     this.boundMouseDown = (e: MouseEvent) => this.onMouseDown(e);
@@ -513,7 +513,7 @@ export class PDFPatcher {
     }
 
     const msg = lines.join('\n');
-    console.log('[FleurPDF] 诊断报告\n' + msg);
+    console.debug('[FleurPDF] 诊断报告\n' + msg);
     new Notice(msg, 12000);
   }
 
@@ -603,7 +603,7 @@ export class PDFPatcher {
         } else {
           // 降噪：只在首轮打印，重试轮不刷屏
           if (attempt === 0) {
-            console.log('[FleurPDF] restore: no segments for', ann.id, 'attempt', attempt);
+            console.debug('[FleurPDF] restore: no segments for', ann.id, 'attempt', attempt);
           }
           needsRetry = true;
         }
@@ -652,7 +652,7 @@ export class PDFPatcher {
 
       restored++;
     }
-    console.log('[FleurPDF] restore done:', restored, '/', data.annotations.length, 'attempt', attempt);
+    console.debug('[FleurPDF] restore done:', restored, '/', data.annotations.length, 'attempt', attempt);
 
     if (needsRetry && attempt < MAX_ATTEMPTS) {
       this.scheduleRestore(filePath, attempt + 1);
@@ -711,7 +711,7 @@ export class PDFPatcher {
     const snapshot = this.buildSnapshotFromSelection(selection);
     if (snapshot) {
       this.lastSnapshot = snapshot;
-      console.log('[FleurPDF] snapshot:',
+      console.debug('[FleurPDF] snapshot:',
         `p${snapshot.pageNum}${snapshot.endPage ? '-' + snapshot.endPage : ''}`,
         snapshot.pages.map(ps => `${ps.page}:${ps.segments.length}seg`).join(' '));
     }
