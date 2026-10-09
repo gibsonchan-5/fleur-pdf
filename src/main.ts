@@ -20,6 +20,8 @@ import { InkSync } from './mobile/ink-sync';
 import { InkUI } from './mobile/ink-ui';
 import { InkDebugRecorder } from './mobile/ink-debug';
 import { installInkStyles, removeInkStyles } from './mobile/ink-styles';
+import { NoteLayer } from './notes/note-layer';
+import { NoteUI } from './notes/note-ui';
 import { getFleurDictBridge, queryMeaning, type FleurDictBridge } from './dict-bridge';
 import { WordbookSync, type WordbookTombstone } from './wordbook-sync';
 
@@ -43,6 +45,14 @@ export default class FleurPDFPlugin extends Plugin {
   inkUI: InkUI | null = null;
   /** 手写断触真机诊断记录器（命令开关，桌面默认零影响） */
   inkDebug: InkDebugRecorder | null = null;
+
+  /**
+   * PDF 页面便签（notesEnabled 开关）。
+   * 两个对象常驻构造（开销只是几个事件监听），开关只控制「挂层/显隐」——
+   * 与 patcher 同一套「装一次、按设置短路」的模式，避免挂载/卸载的状态机。
+   */
+  noteLayer: NoteLayer;
+  noteUI: NoteUI;
 
   /** 本地 OCR（tesseract.js 懒加载）：截图取字的离线通道。 */
   ocr = new OcrEngine(this);
@@ -145,6 +155,10 @@ export default class FleurPDFPlugin extends Plugin {
     // 产物里没有引擎，移动端 this.inkEngine 恒为 undefined，
     // 而故障是静默的：笔盒按钮照常显示，点下去毫无反应，控制台也不报错。
     this.inkEngine = new InkEngine(this.app);
+
+    // 便签：借用 inkEngine 的视图解析（三层包装耦合收口在那一处），必须在其后构造。
+    this.noteLayer = new NoteLayer(this);
+    this.noteUI = new NoteUI(this, this.noteLayer);
 
     this.registerView(VIEW_TYPE_SIDEBAR, (leaf) => {
       return new SidebarView(leaf, this);
@@ -285,6 +299,9 @@ export default class FleurPDFPlugin extends Plugin {
     // 桌面端走 else 分支：body class 不添加、<style> 不存在 —— 零影响；
     // 真机移动端则在插件加载完就把手写入口挂上，不必等用户进设置里拨开关。
     this.applyMobileMode();
+
+    // 便签总开关同步（默认关 → 只走 detachAll/hide，桌面零影响）。
+    this.applyNotesMode();
   }
 
   onunload() {
@@ -292,6 +309,10 @@ export default class FleurPDFPlugin extends Plugin {
     this.inkUI?.unmount();
     this.inkUI = null;
     this.inkEngine?.dispose();
+    this.noteLayer?.destroy();
+    document.body.style.removeProperty('--fleur-note-bg');
+    document.body.style.removeProperty('--fleur-note-fg');
+    document.body.style.removeProperty('--fleur-note-font-size');
     void this.inkDebug?.stop('插件卸载');
     this.inkDebug = null;
     void this.ocr.terminate();
@@ -329,6 +350,43 @@ export default class FleurPDFPlugin extends Plugin {
       this.inkUI = null;
       removeInkStyles();
     }
+    // 胶囊刚被建掉 / 拆掉 —— 便签按钮的宿主变了，重新认领一次
+    this.noteUI?.syncPlacement();
+  }
+
+  /**
+   * 同步便签功能开关（设置页拨动后调用）。
+   * 开 = 挂覆盖层 + 工具栏按钮出现；关 = 拆层藏钮（数据留在 sidecar，不删）。
+   */
+  applyNotesMode(): void {
+    this.applyNoteStyle();
+    if (this.settings.notesEnabled === true) {
+      void this.noteLayer.sync();
+      this.noteUI.syncPlacement();
+    } else {
+      this.noteLayer.detachAll();
+      this.noteUI.hide();
+    }
+  }
+
+  /**
+   * 便签外观设置 → body 级 CSS 变量（styles.css 里 .fleur-pdf-note 消费）。
+   * 颜色与字号都只改自定义属性，已挂的便签元素无需重建即可生效；
+   * 开关/卸载之外的任何路径都不会调用它 —— 便签关闭时这些变量无人引用，零影响。
+   *
+   * 字色不交给用户：按 WCAG 相对亮度选深墨或米白，保证任意底色都可读。
+   */
+  applyNoteStyle(): void {
+    const raw = this.settings.noteColor ?? '#fef3a6';
+    const bg = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw : '#fef3a6';
+    const r = parseInt(bg.slice(1, 3), 16);
+    const g = parseInt(bg.slice(3, 5), 16);
+    const b = parseInt(bg.slice(5, 7), 16);
+    const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    document.body.style.setProperty('--fleur-note-bg', bg);
+    document.body.style.setProperty('--fleur-note-fg', lum < 0.55 ? '#f2ecd9' : '#4a3f12');
+    const size = this.settings.noteFontSize ?? 15;
+    document.body.style.setProperty('--fleur-note-font-size', `${size}px`);
   }
 
   async loadSettings() {

@@ -1404,9 +1404,11 @@ body.fleur-pdf-mobile .fleur-underline-wavy {
    配合 platform.ts 的整表注入策略，桌面端连 pdf.js 编辑器样式都不会加载。
    ============================================================ */
 
-/* ── 双态切换器（右下角常驻胶囊：编辑 / 手写） ── */
+/* ── 双态切换器（常驻胶囊：编辑 / 手写）──
+   position:absolute：钉在「当前焦点的 PDF 窗格」（.workspace-leaf）内部，
+   不再全屏浮动；焦点离开 PDF 时整个节点被 JS 摘除（ink-ui syncHosts）。 */
 body.fleur-pdf-mobile .fleur-pdf-ink-toggle {
-  position: fixed;
+  position: absolute;
   right: 16px;
   bottom: 96px;
   z-index: 30;
@@ -1450,47 +1452,37 @@ body.fleur-pdf-mobile .fleur-pdf-ink-switch-btn .svg-icon {
   height: 18px;
 }
 
-/* ── 悬浮胶囊：拖动中 / 收起成贴边把手 ──
+/* ── 悬浮胶囊：拖动 / 折叠 ──
    拖动中抬层级 + 加深投影，给一个「抓住了」的反馈；
-   收起后只留一根半透明贴边把手 —— 不挡正文，但随时点得回来。
-   （长按 650ms 收起，点把手恢复；命令面板也有同名开关兜底。）
-   1.7.11 移除 .is-auto-collapsed（文本模式自动贴边）：真机反馈把手太小点不中，
-   自动缩起弊大于利；让路改由用户长按收起自己表达。 */
+   折叠 = 胶囊只剩一枚 44px 圆钮（图标 = 当前模式），点按展开、按住拖动。
+   入口与笔盒完全对齐：左缘把手负责拖，末端 » 钮负责折叠
+   （替代 1.7.11 的「长按收起 + 贴边细把手」—— 真机反馈那套不直观、把手太小）。 */
 body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-dragging {
   z-index: 40;
   opacity: 0.92;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
 }
 
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed {
-  padding: 0;
-  gap: 0;
-  background: transparent;
-  border: none;
-  box-shadow: none;
+/* 胶囊内把手矮一档，贴合 34px 的段按钮（笔盒内仍是 40px） */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle .fleur-pdf-ink-grip {
+  height: 34px;
 }
 
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed .fleur-pdf-ink-switch-btn {
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed {
+  padding: 2px;
+}
+
+/* 折叠态只留圆钮：三段、把手、折叠钮、便签工具容器全部退场 */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed > :not(.fleur-pdf-ink-collapsed-btn) {
   display: none;
 }
 
-/* 把手本体：14×46 的圆角竖条，常态半透明，按住时变实。
-   只在用户长按收起（.is-collapsed，持久态）时出现。 */
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed::after {
-  content: '';
-  display: block;
-  width: 14px;
-  height: 46px;
-  border-radius: 999px;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
-  opacity: 0.55;
-  transition: opacity 120ms ease;
+/* 圆钮常驻 DOM、默认隐身，由折叠态点亮（尺寸样式复用笔盒那套 .fleur-pdf-ink-collapsed-btn） */
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle .fleur-pdf-ink-collapsed-btn {
+  display: none;
 }
-
-body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed:active::after {
-  opacity: 1;
+body.fleur-pdf-mobile .fleur-pdf-ink-toggle.is-collapsed .fleur-pdf-ink-collapsed-btn {
+  display: flex;
 }
 
 /* ── 悬浮胶囊 / 单段的隐藏 ──
@@ -1514,9 +1506,11 @@ body.fleur-pdf-mobile .fleur-pdf-ink-btn svg {
   flex: 0 0 auto;
 }
 
-/* ── 笔盒（底部胶囊） ── */
+/* ── 笔盒（窗格内底部胶囊）──
+   position:absolute = 只活在当前焦点的 PDF 窗格里（宿主由 ink-ui syncHosts 认领），
+   底部居中相对窗格而非整个屏幕。 */
 body.fleur-pdf-mobile .fleur-pdf-ink-bar {
-  position: fixed;
+  position: absolute;
   left: 50%;
   bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
@@ -1588,6 +1582,44 @@ body.fleur-pdf-mobile .fleur-pdf-ink-btn.is-primary {
 body.fleur-pdf-mobile .fleur-pdf-ink-btn .svg-icon {
   width: 19px;
   height: 19px;
+}
+
+/* ── 笔盒折叠态：一枚笔尖圆钮 ──
+   与整盒同一套壳（同底色/描边/投影），只是缩成圆；钮体 44px ——
+   1.7.11 切换器「贴边把手太小点不中」的教训：缩起来的东西反而要给更大的命中区。
+   点按展开 / 按住拖动都落在钮上，手势归我们（与把手同语义）。 */
+body.fleur-pdf-mobile .fleur-pdf-ink-bar.is-collapsed {
+  padding: 2px;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-collapsed-btn {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--text-muted);
+  cursor: pointer;
+  touch-action: none;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-collapsed-btn svg {
+  width: 21px;
+  height: 21px;
+  flex: 0 0 auto;
+}
+
+/* 当前色小圆点（橡皮/套索无颜色，JS 侧不生成此元素） */
+body.fleur-pdf-mobile .fleur-pdf-ink-cdot {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  pointer-events: none;
 }
 
 /* 同上：裸 svg 兜底（见 ink-switch-btn svg 规则处的说明） */
@@ -4107,4 +4139,231 @@ body.fleur-pdf-dict-dragging {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   background: #fff;
+}
+
+/* ============================================================
+   PDF 页面便签（notes/）
+   ============================================================ */
+
+/* ── 页内覆盖层容器：只当坐标系，不吃事件；便签本体各自 auto ──
+   z-index 5 = 压在 ink canvas（3/4）之上，手写模式下由下面那条规则让笔。 */
+.fleur-pdf-note-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+}
+
+/* 手写模式：便签让位给笔（可见但不可点，落墨穿过它） */
+body.fleur-pdf-ink-active .fleur-pdf-note {
+  pointer-events: none;
+}
+
+/* ── 便签本体：经典便签黄，无描边，靠投影分层 ──
+   底色/字色/字号都走 body 级 CSS 变量（设置页便签颜色与字号由 main.ts
+   applyNoteStyle() 写入，字色按底色亮度自动配深/浅）；缺省值即默认样式。 */
+.fleur-pdf-note {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--fleur-note-bg, #fef3a6);
+  color: var(--fleur-note-fg, #4a3f12);
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
+  font-size: var(--fleur-note-font-size, 15px);
+  line-height: 1.5;
+  overflow: hidden;
+}
+
+/* 顶栏 = 拖拽把手区（删除键在右端，各自是独立点击目标） */
+.fleur-pdf-note-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 20px;
+  cursor: grab;
+  touch-action: none;
+}
+.fleur-pdf-note-bar:active {
+  cursor: grabbing;
+}
+.fleur-pdf-note-del {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0.4;
+  cursor: pointer;
+}
+.fleur-pdf-note-del:hover {
+  opacity: 0.85;
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+}
+.fleur-pdf-note-del svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+
+/* 正文：原生 textarea，多行纯文本。
+   ⚠️ background/border/box-shadow 必须 !important：
+   Obsidian 核心样式对所有 textarea 定了 var(--background-primary) 白底，
+   真机上正是它把便签正文刷白（顶条黄、 body 白的双层观感），普通声明压不过。 */
+.fleur-pdf-note-text {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  padding: 2px 8px 8px;
+  outline: none;
+  overflow-y: auto;
+}
+.fleur-pdf-note-text::placeholder {
+  color: currentColor;
+  opacity: 0.5;
+}
+
+/* 右下角缩放手把：两条短角线，不描边 */
+.fleur-pdf-note-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+.fleur-pdf-note-resize::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  opacity: 0.35;
+}
+
+/* ── 工具栏入口（贴便签 / 导出便签）──
+   三态共用一个容器：胶囊内（继承 .fleur-pdf-ink-switch-btn 的移动样式）、
+   工具栏行内（base 样式贴合 Obsidian 图标按钮）、FAB 兜底（自带胶囊壳）。 */
+.fleur-pdf-note-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.fleur-pdf-note-tools.is-hidden {
+  display: none !important;
+}
+.fleur-pdf-note-tool-btn {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-s, 4px);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.fleur-pdf-note-tool-btn:hover {
+  background-color: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.fleur-pdf-note-tool-btn .svg-icon {
+  width: 16px;
+  height: 16px;
+}
+/* 胶囊内时随大部队：覆盖 base 的 28px，与编辑/手写段同格 */
+body.fleur-pdf-mobile .fleur-pdf-note-tools .fleur-pdf-ink-switch-btn {
+  width: 40px;
+  height: 34px;
+  border-radius: 999px;
+}
+body.fleur-pdf-mobile .fleur-pdf-note-tools .fleur-pdf-ink-switch-btn svg {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+}
+
+/* FAB 兜底（桌面工具栏反查失败时）：钉在当前 PDF 窗格内的右下角独立小胶囊 */
+.fleur-pdf-note-tools.is-fab {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 30;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+  touch-action: none;
+}
+.fleur-pdf-note-tools.is-fab .fleur-pdf-note-tool-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+}
+
+/* ── 便签折叠态：收成一个小脚注 ──
+   宽度随摘要文字收缩（CSS 限宽 160px，JS 侧 applyGeometry 置 width:auto），
+   摘要在左（首行截断），折叠箭头 + 删除在右；正文与缩放手把整体隐藏，
+   高度由 JS 钉为 NOTE_FOLD_H，w/h 里记的展开尺寸原样保留。 */
+.fleur-pdf-note-preview {
+  display: none;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 160px;
+  padding-left: 8px;
+  font-size: 0.85em;
+  line-height: 22px;
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fleur-pdf-note.is-collapsed .fleur-pdf-note-preview {
+  display: block;
+}
+.fleur-pdf-note.is-collapsed .fleur-pdf-note-text,
+.fleur-pdf-note.is-collapsed .fleur-pdf-note-resize {
+  display: none;
+}
+.fleur-pdf-note.is-collapsed .fleur-pdf-note-bar {
+  height: 100%;
+  justify-content: flex-end;
+}
+/* 折叠箭头：与删除键同款幽灵钮，各占独立点击目标（点箭头绝不触发拖拽） */
+.fleur-pdf-note-fold {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0.4;
+  cursor: pointer;
+}
+.fleur-pdf-note-fold:hover {
+  opacity: 0.85;
+  background-color: color-mix(in srgb, currentColor 12%, transparent);
+}
+.fleur-pdf-note-fold svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
 }

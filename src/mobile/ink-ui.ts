@@ -90,6 +90,8 @@ export class InkUI {
 
 	/** 是否处于手写模式。 */
 	private active = false;
+	/** 折叠态圆钮（胶囊内常驻 DOM，显隐由 .is-collapsed 的 CSS 控制）。 */
+	private collapsedSeg: HTMLElement | null = null;
 	/** 当前选中的笔序号（对应 DEFAULT_PENS）。 */
 	private penIndex = 0;
 	/** 每支笔的当前参数（颜色/粗细按笔独立记忆，持久化到插件设置）。 */
@@ -224,15 +226,37 @@ export class InkUI {
 		this.inkSeg = inkBtn;
 		this.sideSeg = sideBtn;
 		this.toggleBtn = sw;
+
+		// ── 拖把手（胶囊移动的唯一入口，语义与笔盒对齐：只认把手，按钮区不参与拖动）──
+		const grip = createDiv('fleur-pdf-ink-grip');
+		setIcon(grip, 'grip-vertical');
+		grip.setAttribute('aria-label', '拖动悬浮按钮');
+		sw.insertBefore(grip, sw.firstChild);
+		this.attachSwitcherMove(sw, grip);
+
+		// ── 折叠钮（末端）：整盒收成一枚圆钮，替代 1.7.11 前不直观的长按收起 ──
+		const collapseBtn = sw.createDiv('fleur-pdf-ink-switch-btn fleur-pdf-ink-collapse');
+		setIcon(collapseBtn, 'chevrons-right');
+		collapseBtn.setAttribute('aria-label', '折叠悬浮按钮');
+		collapseBtn.addEventListener('click', (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			this.setSwitcherCollapsed(true);
+		});
+
+		// ── 折叠圆钮：常驻 DOM，仅 .is-collapsed 态可见；点按展开、按住拖动 ──
+		const collapsedBtn = sw.createDiv('fleur-pdf-ink-collapsed-btn');
+		collapsedBtn.setAttribute('aria-label', '展开悬浮按钮');
+		this.collapsedSeg = collapsedBtn;
+		this.attachSwitcherMove(sw, collapsedBtn, () => this.setSwitcherCollapsed(false));
+
 		this.syncSwitcher();
 		this.syncSwitcherVisibility();
 
-		// 位置恢复（上次拖到哪就回到哪）+ 拖动换位 + 长按收起
+		// 位置恢复（上次拖到哪就回到哪）+ 钉进当前焦点的 PDF 窗格
 		this.applySwitcherPos();
 		sw.toggleClass('is-collapsed', this.plugin.settings.inkSwitcherCollapsed === true);
-		this.attachSwitcherDrag(sw);
-		// 1.7.11 移除「文本模式自动贴边」：真机反馈贴边把手太小、点不中，体验差于
-		// 胶囊常驻。让路需求由用户长按收起（持久态）自己表达。
+		this.syncHosts();
 
 		document.body.addEventListener('click', this.onBodyClick, true);
 
@@ -265,6 +289,11 @@ export class InkUI {
 		this.plugin.registerEvent(
 			this.plugin.app.workspace.on('file-open', () => this.syncSwitcherVisibility()),
 		);
+		// 分屏比例拖动 / 转屏 / 窗格销毁重建 → 重新认领宿主并夹回位置
+		this.plugin.registerEvent(
+			this.plugin.app.workspace.on('layout-change', () => this.syncHosts()),
+		);
+		this.plugin.registerDomEvent(window, 'resize', () => this.syncHosts());
 	}
 
 	unmount(): void {
@@ -277,6 +306,7 @@ export class InkUI {
 		this.cancelAutoSave();
 		this.toggleBtn?.remove();
 		this.toggleBtn = null;
+		this.collapsedSeg = null;
 		this.editSeg = null;
 		this.inkSeg = null;
 		this.sideSeg = null;
@@ -752,7 +782,13 @@ export class InkUI {
 
 	private buildPenBar(): void {
 		this.penBar?.remove();
-		const bar = document.body.createDiv('fleur-pdf-ink-bar');
+		// 折叠态：整盒换成一枚笔尖圆钮。refreshPenBar（换笔/换色）会重建 ——
+		// 圆钮的图标与色点每次都跟当前笔走，折叠态在重绘后不会丢。
+		if (this.plugin.settings.inkBarCollapsed === true) {
+			this.buildCollapsedBar();
+			return;
+		}
+		const bar = createDiv('fleur-pdf-ink-bar');
 		this.penBar = bar;
 
 		// ── 拖把手（笔盒整体拖动的唯一入口：只认把手，按钮区不受影响）──
@@ -869,27 +905,71 @@ export class InkUI {
 			void this.exitInk();
 		});
 
+		// ── 折叠：整盒收成一枚笔尖圆钮（状态跨会话记住，见 settings.inkBarCollapsed）──
+		const collapseBtn = bar.createDiv('fleur-pdf-ink-btn fleur-pdf-ink-collapse');
+		setIcon(collapseBtn, 'chevrons-right');
+		collapseBtn.setAttribute('aria-label', '折叠笔盒');
+		collapseBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.setBarCollapsed(true);
+		});
+
 		// 笔盒每次都被整体重建（选笔 / 换色等都会走 refreshPenBar）——
-		// 重建后必须把用户拖过的位置贴回去，否则一换笔就跳回底部居中。
-		this.applyBarPos();
+		// syncHosts 负责挂进当前焦点 PDF 窗格并把用户拖过的位置贴回去，
+		// 否则一换笔就跳回底部居中。
+		this.syncHosts();
+	}
+
+	/**
+	 * 折叠形态：一枚 44px 圆钮（当前工具图标 + 右下角当前色点）。
+	 * 点按展开、按住拖动（与整盒共用把手拖动逻辑与 inkBarPos 落盘）；
+	 * 只收 UI 不改当前工具 —— 收起后笔照样能落墨，这正是腾地方的意义。
+	 */
+	private buildCollapsedBar(): void {
+		const bar = createDiv('fleur-pdf-ink-bar is-collapsed');
+		this.penBar = bar;
+		const pen = this.pens[this.penIndex];
+		const btn = bar.createDiv('fleur-pdf-ink-collapsed-btn');
+		setIcon(btn, this.snapMode ? 'camera' : PEN_ICON[pen.kind]);
+		btn.setAttribute('aria-label', '展开笔盒');
+		if (pen.kind !== 'eraser' && pen.kind !== 'lasso') {
+			btn.createDiv('fleur-pdf-ink-cdot').setCssStyles({ background: pen.color });
+		}
+		// 点按 = 展开走 attachBarDrag 的 onTap（6px 阈值内、pointerup 无位移才触发）。
+		// 不用 click：拖动收尾的吞 click 监听注册在本元素监听之后，
+		// 同一目标节点上按注册序派发，压不住「拖完松手误展开」。
+		this.attachBarDrag(bar, btn, () => this.setBarCollapsed(false));
+		this.syncHosts();
+	}
+
+	/** 折叠 / 展开笔盒：写设置（跨会话）+ 重建。 */
+	private setBarCollapsed(v: boolean): void {
+		if (this.plugin.settings.inkBarCollapsed === v) return;
+		this.plugin.settings.inkBarCollapsed = v;
+		void this.plugin.saveSettings().catch(() => undefined);
+		this.refreshPenBar();
 	}
 
 	/* ==================== 笔盒：拖动与位置恢复 ==================== */
 
 	/**
-	 * 把笔盒放回用户上次拖到的位置（视口比例 → 像素，钳在屏幕内）。
-	 * 没拖过（无 inkBarPos）→ 什么都不做，走 CSS 默认（底部居中）。
+	 * 把笔盒放回用户上次拖到的位置（宿主窗格内比例 → 像素，钳在窗格内）。
+	 * 没拖过（无 inkBarPos）→ 什么都不做，走 CSS 默认（窗格内底部居中）。
+	 * 尚未挂上宿主（offsetParent 为空）时退回视口尺寸，挂上后 syncHosts 会再贴一次。
 	 */
 	private applyBarPos(): void {
 		const bar = this.penBar;
 		if (!bar) return;
 		const pos = this.plugin.settings.inkBarPos;
 		if (!pos) return;
+		const p = bar.offsetParent as HTMLElement | null;
+		const W = p ? p.getBoundingClientRect().width : window.innerWidth;
+		const H = p ? p.getBoundingClientRect().height : window.innerHeight;
 		const w = bar.offsetWidth;
 		const h = bar.offsetHeight;
 		if (!w || !h) return; // 尚未布局完成，等下一次重建再贴
-		const left = Math.min(window.innerWidth - w - 8, Math.max(8, pos.x * window.innerWidth - w / 2));
-		const top = Math.min(window.innerHeight - h - 8, Math.max(8, pos.y * window.innerHeight - h / 2));
+		const left = Math.min(W - w - 8, Math.max(8, pos.x * W - w / 2));
+		const top = Math.min(H - h - 8, Math.max(8, pos.y * H - h / 2));
 		bar.setCssStyles({
 			left: `${Math.round(left)}px`,
 			top: `${Math.round(top)}px`,
@@ -902,8 +982,10 @@ export class InkUI {
 	/**
 	 * 笔盒拖动：只认把手（grip），阈值 6px 以内当误触。
 	 * 位移改 left/top（transform 归零），松手把中心点折成视口比例存进设置。
+	 * onTap：调用方想让把手同时承担「点按」语义时用（折叠圆钮 = 点按展开）；
+	 * 只在无位移的 pointerup 上触发一次，与拖动天然互斥。
 	 */
-	private attachBarDrag(bar: HTMLElement, grip: HTMLElement): void {
+	private attachBarDrag(bar: HTMLElement, grip: HTMLElement, onTap?: () => void): void {
 		let dragging = false;
 		let moved = false;
 		let startX = 0;
@@ -911,15 +993,26 @@ export class InkUI {
 		let originLeft = 0;
 		let originTop = 0;
 
+		// 坐标参考系 = 宿主 PDF 窗格（position:absolute 的包含块），与切换器一致
+		const hostRect = () => {
+			const p = bar.offsetParent as HTMLElement | null;
+			if (p) {
+				const r = p.getBoundingClientRect();
+				return { left: r.left, top: r.top, width: r.width || 1, height: r.height || 1 };
+			}
+			return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+		};
+
 		grip.addEventListener('pointerdown', (e) => {
 			if (e.pointerType === 'mouse' && e.button !== 0) return;
 			dragging = true;
 			moved = false;
 			startX = e.clientX;
 			startY = e.clientY;
+			const hr = hostRect();
 			const r = bar.getBoundingClientRect();
-			originLeft = r.left;
-			originTop = r.top;
+			originLeft = r.left - hr.left;
+			originTop = r.top - hr.top;
 			bar.setCssStyles({
 				left: `${originLeft}px`,
 				right: 'auto',
@@ -960,6 +1053,7 @@ export class InkUI {
 			if (!moved) {
 				bar.removeClass('is-dragging');
 				this.applyBarPos();
+				onTap?.();
 				return;
 			}
 			bar.removeClass('is-dragging');
@@ -968,10 +1062,11 @@ export class InkUI {
 				ev.stopPropagation();
 				ev.preventDefault();
 			}, { capture: true, once: true });
+			const hr = hostRect();
 			const r = bar.getBoundingClientRect();
 			this.plugin.settings.inkBarPos = {
-				x: Math.min(1, Math.max(0, (r.left + r.width / 2) / window.innerWidth)),
-				y: Math.min(1, Math.max(0, (r.top + r.height / 2) / window.innerHeight)),
+				x: Math.min(1, Math.max(0, (r.left + r.width / 2 - hr.left) / hr.width)),
+				y: Math.min(1, Math.max(0, (r.top + r.height / 2 - hr.top) / hr.height)),
 			};
 			void this.plugin.saveSettings().catch(() => undefined);
 			this.applyBarPos();
@@ -1071,18 +1166,8 @@ export class InkUI {
 	private syncSwitcher(): void {
 		this.editSeg?.toggleClass('is-active', !this.active);
 		this.inkSeg?.toggleClass('is-active', this.active);
-	}
-
-	/**
-	 * 当前视图是不是在 PDF 上。
-	 * 只认活动文件的扩展名，比去猜 leaf 的 view 类型稳。
-	 */
-	private isPdfContext(): boolean {
-		try {
-			return this.plugin.app.workspace.getActiveFile()?.extension === 'pdf';
-		} catch {
-			return false;
-		}
+		// 折叠圆钮的图标 = 当前模式（手写中是笔尖，编辑态是 T），一眼知现状
+		if (this.collapsedSeg) setIcon(this.collapsedSeg, this.active ? 'pen-tool' : 'type');
 	}
 
 	/**
@@ -1098,7 +1183,7 @@ export class InkUI {
 		const showSide = s.inkShowSideSeg !== false;
 		const anySeg = showEdit || showInk || showSide;
 
-		const hidden = s.inkSwitcherHidden === true || !this.isPdfContext() || !anySeg;
+		const hidden = s.inkSwitcherHidden === true || !this.activePdfHost() || !anySeg;
 		sw.toggleClass('is-hidden', hidden);
 
 		this.editSeg?.toggleClass('is-hidden', !showEdit);
@@ -1112,6 +1197,10 @@ export class InkUI {
 				`FleurPDF 手写批注已就绪 v${this.plugin.manifest.version}：点击右下角的“手写”按钮开始批注`,
 			);
 		}
+
+		// 焦点可能换了窗格（本方法在 active-leaf-change / file-open 上被调）——
+		// 顺带把悬浮层重新钉到当前焦点的 PDF 窗格里。
+		this.syncHosts();
 	}
 
 	/** 供外部（设置页改开关后）刷新显隐。 */
@@ -1141,34 +1230,40 @@ export class InkUI {
 	}
 
 	/**
-	 * 拖动换位 + 长按收起。
-	 * 位移小于 6px 一律当点击，超过才进入拖动；拖动结束后用一次捕获态 click 吞掉误点。
+	 * 悬浮按钮拖动（把手 = 展开态唯一拖动入口；折叠圆钮 = 点按展开 + 按住拖动）。
+	 * 语义与笔盒一致：位移 <6px 一律当点击；坐标以宿主 PDF 窗格为参考系，
+	 * 松手把中心点折成窗格内比例存进设置。
+	 * onTap：把手同时承担「点按」语义时（圆钮）在无位移的 pointerup 上触发一次。
 	 */
-	private attachSwitcherDrag(sw: HTMLElement): void {
+	private attachSwitcherMove(sw: HTMLElement, handle: HTMLElement, onTap?: () => void): void {
 		let dragging = false;
 		let moved = false;
 		let startX = 0;
 		let startY = 0;
 		let originLeft = 0;
 		let originTop = 0;
-		let longPress: number | null = null;
 
-		const clearLongPress = () => {
-			if (longPress !== null) {
-				window.clearTimeout(longPress);
-				longPress = null;
+		// 宿主窗格（.workspace-leaf，position:relative）的视口矩形；
+		// 极端情况（尚未挂上）退回视口，保证算式不除零。
+		const hostRect = () => {
+			const p = sw.offsetParent as HTMLElement | null;
+			if (p) {
+				const r = p.getBoundingClientRect();
+				return { left: r.left, top: r.top, width: r.width || 1, height: r.height || 1 };
 			}
+			return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
 		};
 
-		sw.addEventListener('pointerdown', (e) => {
+		handle.addEventListener('pointerdown', (e) => {
 			if (e.pointerType === 'mouse' && e.button !== 0) return;
 			dragging = true;
 			moved = false;
 			startX = e.clientX;
 			startY = e.clientY;
+			const hr = hostRect();
 			const r = sw.getBoundingClientRect();
-			originLeft = r.left;
-			originTop = r.top;
+			originLeft = r.left - hr.left;
+			originTop = r.top - hr.top;
 			sw.setCssStyles({
 				left: `${originLeft}px`,
 				right: 'auto',
@@ -1179,23 +1274,17 @@ export class InkUI {
 			try {
 				// ⚠️ 只有触摸在 pointerdown 立即捕获。鼠标绝不能在这里捕获：
 				// Chromium 会把后续 click 重定向到 pointerdown/pointerup 目标的公共祖先
-				// （即容器 sw），胶囊三段的 click 永远不触发 —— 桌面端表现就是
-				// 「点手写无反应」（真机触摸的 click 仍落在原始命中元素，不受影响，
+				// （真机触摸的 click 仍落在原始命中元素，不受影响，
 				// 已用 Playwright 双端对照实验实锤）。鼠标改为拖动真正开始时再捕获。
-				if (e.pointerType !== 'mouse') (sw as HTMLElement).setPointerCapture(e.pointerId);
+				if (e.pointerType !== 'mouse') handle.setPointerCapture(e.pointerId);
 			} catch {
 				/* 某些 WebView 对已释放指针抛错，忽略 */
 			}
-			clearLongPress();
-			longPress = window.setTimeout(() => {
-				longPress = null;
-				if (moved) return;
-				dragging = false;
-				this.setSwitcherCollapsed(true);
-			}, 650);
-		}, true);
+			e.preventDefault();
+			e.stopPropagation();
+		});
 
-		sw.addEventListener('pointermove', (e) => {
+		handle.addEventListener('pointermove', (e) => {
 			if (!dragging) return;
 			if (e.pointerType !== 'mouse') e.preventDefault();
 			const dx = e.clientX - startX;
@@ -1203,13 +1292,12 @@ export class InkUI {
 			if (!moved) {
 				if (Math.hypot(dx, dy) < 6) return;
 				moved = true;
-				clearLongPress();
 				sw.addClass('is-dragging');
 				// 鼠标的捕获推迟到此刻：拖动意图确立后才接管后续指针事件。
 				// 触摸靠隐式捕获不丢 move，无需此处补捕获。
 				if (e.pointerType === 'mouse') {
 					try {
-						(sw as HTMLElement).setPointerCapture(e.pointerId);
+						handle.setPointerCapture(e.pointerId);
 					} catch {
 						/* 忽略 */
 					}
@@ -1222,50 +1310,80 @@ export class InkUI {
 			if (!dragging) return;
 			dragging = false;
 			try {
-				(sw as HTMLElement).releasePointerCapture?.(e.pointerId);
+				handle.releasePointerCapture?.(e.pointerId);
 			} catch {
 				/* 忽略 */
 			}
-			clearLongPress();
 			if (!moved) {
 				sw.removeClass('is-dragging');
 				this.applySwitcherPos();
+				onTap?.();
 				return;
 			}
 			sw.removeClass('is-dragging');
-			sw.addEventListener('click', (ev) => {
+			handle.addEventListener('click', (ev) => {
 				ev.stopPropagation();
 				ev.preventDefault();
 			}, { capture: true, once: true });
 
+			const hr = hostRect();
 			const r = sw.getBoundingClientRect();
-			const side: 'left' | 'right' = r.left + r.width / 2 < window.innerWidth / 2 ? 'left' : 'right';
+			const side: 'left' | 'right' = r.left + r.width / 2 < hr.left + hr.width / 2 ? 'left' : 'right';
 			const half = r.height / 2;
-			const centerY = Math.min(window.innerHeight - half - 8, Math.max(half + 8, r.top + r.height / 2));
+			const centerY = Math.min(hr.top + hr.height - half - 8, Math.max(hr.top + half + 8, r.top + r.height / 2));
 			this.plugin.settings.inkSwitcherSide = side;
-			this.plugin.settings.inkSwitcherY = centerY / window.innerHeight;
+			this.plugin.settings.inkSwitcherY = (centerY - hr.top) / hr.height;
 			void this.plugin.saveSettings().catch(() => undefined);
 			this.applySwitcherPos();
 		};
-		sw.addEventListener('pointerup', (e) => finish(e as PointerEvent));
-		sw.addEventListener('pointercancel', (e) => finish(e as PointerEvent));
-
-		// 收起态下点一下把手即恢复
-		sw.addEventListener('click', (e) => {
-			if (this.plugin.settings.inkSwitcherCollapsed !== true) return;
-			e.preventDefault();
-			e.stopPropagation();
-			this.setSwitcherCollapsed(false);
-		}, true);
+		handle.addEventListener('pointerup', (e) => finish(e as PointerEvent));
+		handle.addEventListener('pointercancel', (e) => finish(e as PointerEvent));
 	}
 
-	/** 收起 / 展开悬浮胶囊，状态持久化。 */
+	/* ==================== 悬浮层宿主：只钉在当前焦点的 PDF 窗格 ==================== */
+
+	/**
+	 * 当前焦点 PDF 叶子的 .workspace-leaf 容器；焦点不在 PDF 上返回 null。
+	 * 只认 activeLeaf（「只跟焦点」策略）：切到笔记/其他窗格 ⇒ 悬浮层整体摘除。
+	 */
+	private activePdfHost(): HTMLElement | null {
+		try {
+			const leaf = this.plugin.app.workspace.activeLeaf;
+			if (!leaf) return null;
+			if ((leaf.view as any)?.getViewType?.() !== 'pdf') return null;
+			return ((leaf as any).containerEl as HTMLElement | undefined) ?? null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * 把胶囊 / 笔盒重新钉到当前宿主窗格：
+	 * · 有 PDF 焦点 → appendChild 过去（同一节点 move 不丢监听），再贴位置；
+	 * · 无 PDF 焦点 → remove() 摘除（引用保留，回来原地恢复；手写模式与未落盘笔迹不动）。
+	 */
+	private syncHosts(): void {
+		const host = this.activePdfHost();
+		if (this.toggleBtn && this.toggleBtn.parentElement !== host) {
+			if (host) host.appendChild(this.toggleBtn);
+			else this.toggleBtn.remove();
+		}
+		if (this.penBar && this.penBar.parentElement !== host) {
+			if (host) host.appendChild(this.penBar);
+			else this.penBar.remove();
+		}
+		this.applySwitcherPos();
+		this.applyBarPos();
+	}
+
+	/** 折叠 / 展开悬浮胶囊，状态持久化。 */
 	private setSwitcherCollapsed(collapsed: boolean): void {
 		this.plugin.settings.inkSwitcherCollapsed = collapsed;
 		void this.plugin.saveSettings().catch(() => undefined);
 		this.toggleBtn?.toggleClass('is-collapsed', collapsed);
+		this.syncSwitcher();
 		if (collapsed) {
-			new Notice('悬浮按钮已收起：点侧边的小把手即可恢复，也可用命令面板的「显示 / 隐藏手写批注悬浮按钮」');
+			new Notice('悬浮按钮已折叠：点圆钮展开，也可用命令面板的「显示 / 隐藏手写批注悬浮按钮」');
 		}
 	}
 

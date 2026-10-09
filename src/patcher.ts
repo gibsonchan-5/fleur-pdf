@@ -867,6 +867,8 @@ export class PDFPatcher {
 
   private onContextMenu(e: MouseEvent) {
     if (!this.isInPDFView(e.target)) return;
+    // 便签内部右键 → 保留系统菜单（复制/粘贴），不走批注语义
+    if ((e.target as HTMLElement | null)?.closest?.('.fleur-pdf-note')) return;
 
     // 点击处命中的标注层（由内向外收集，叠加标注的嵌套子 span 各有 annId）
     const hitAnnIds = this.collectAnnotationIdsAt(e.target);

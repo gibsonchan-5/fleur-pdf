@@ -168,6 +168,20 @@ export interface FleurSettings {
    */
   inkBarPos?: { x: number; y: number };
 
+  /**
+   * 笔盒折叠态（跨会话记住）：true = 进入手写模式时直接以一枚笔尖圆钮出现，
+   * 点圆钮展开。只收 UI，不改当前工具与位置（inkBarPos 照常生效）。
+   */
+  inkBarCollapsed?: boolean;
+
+  // ── 便签（贴页备忘录，见 notes/）──
+  /** 便签总开关：关闭时不挂覆盖层、不显示工具栏按钮，便签相关交互零加载。 */
+  notesEnabled?: boolean;
+  /** 便签底色（#rrggbb）。缺省 = 经典便签黄；字色由 applyNoteStyle 按亮度自动配。 */
+  noteColor?: string;
+  /** 便签字号（px）。缺省 = 15（真机反馈 13 偏小）。 */
+  noteFontSize?: number;
+
   /** 隐藏左侧栏的 FleurPDF 图标（全局生效，桌面端与移动端同一条规则）。 */
   hideRibbonIcon?: boolean;
 
@@ -217,6 +231,10 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   inkShowEditSeg: true,
   inkShowInkSeg: true,
   inkShowSideSeg: true,
+  inkBarCollapsed: false,
+  notesEnabled: false,
+  noteColor: '#fef3a6',
+  noteFontSize: 15,
   hideRibbonIcon: false,
   dictSource: 'youdao',
   dictSyncWordbook: true,
@@ -762,6 +780,55 @@ export class FleurSettingTab extends PluginSettingTab {
     // 手写批注的其余设置只在移动端 UI 下渲染（真机，或桌面开启手写批注）——
     // 桌面设置页仅保留上面的「桌面端手写批注」开关，其余零新增（桌面零影响）。
     if (isMobileUI(this.plugin)) this.renderInkSettings(containerEl);
+
+    // ── 便签 ──
+    new Setting(containerEl).setName('便签').setHeading();
+
+    new Setting(containerEl)
+      .setName('PDF 页面便签')
+      .setDesc(
+        '开启后，PDF 工具栏（移动端为右下角悬浮胶囊）出现「贴便签」与「导出便签」按钮：'
+        + '便签可拖拽 pin 在页面任意位置，拖右下角把手自定义大小，点 × 删除；'
+        + '位置、尺寸与内容按 PDF 存储，缩放翻页不漂移。'
+        + '「导出便签」把全部便签按页整理成一篇 md 笔记存入上方「导出文件夹」，再次导出会覆盖上次那篇。'
+        + '注意：便签是本插件画在 PDF 页面上的覆盖层，不会写进 PDF 文件本身。',
+      )
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.notesEnabled === true)
+        .onChange(async (value) => {
+          this.plugin.settings.notesEnabled = value;
+          await this.plugin.saveSettings();
+          this.plugin.applyNotesMode();
+        }));
+
+    new Setting(containerEl)
+      .setName('便签底色')
+      .setDesc(
+        '便签整体（顶条、正文、折叠脚注）统一用这个颜色；'
+        + '文字深浅由程序按底色亮度自动配，保证任何颜色都可读。',
+      )
+      .addColorPicker(picker => picker
+        .setValue(this.plugin.settings.noteColor ?? '#fef3a6')
+        .onChange(async (value) => {
+          this.plugin.settings.noteColor = value;
+          await this.plugin.saveSettings();
+          this.plugin.applyNoteStyle();
+        }));
+
+    const fontSizeDesc = (px: number) =>
+      `正文与折叠摘要的字体大小（px），当前 ${px}px。改动即时生效，无需重开便签。`;
+    const fontSizeSetting = new Setting(containerEl)
+      .setName('便签字号')
+      .setDesc(fontSizeDesc(this.plugin.settings.noteFontSize ?? 15))
+      .addSlider(slider => slider
+        .setLimits(11, 24, 1)
+        .setValue(this.plugin.settings.noteFontSize ?? 15)
+        .onChange(async (value: number) => {
+          this.plugin.settings.noteFontSize = value;
+          await this.plugin.saveSettings();
+          this.plugin.applyNoteStyle();
+          fontSizeSetting.descEl.setText(fontSizeDesc(value));
+        }));
 
     // ── 截图与 OCR ──
     new Setting(containerEl).setName('截图与 OCR').setHeading();

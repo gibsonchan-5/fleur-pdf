@@ -31,6 +31,13 @@
    - Preserves page numbers and organization
    - Perfect for creating reading summaries
 
+5. **Sticky Notes on PDF Pages** *(opt-in, v1.8.0)*
+   - Pin draggable, resizable, collapsible sticky notes anywhere on a PDF page
+   - One click collects all notes into a single Markdown note; re-exporting overwrites the same note
+   - Background color and font size are user-configurable
+   - Fully local: content lives in a sidecar file under the plugin's `data/` folder (hashed file
+     name, no paths or note titles in it), and the exported note is an ordinary vault note
+
 ### Complete Feature List
 
 - 📝 **Highlighting**: Yellow, blue, green, and customizable colors
@@ -246,6 +253,13 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
    - 将所有批注和高亮导出为新的 Obsidian 笔记
    - 保留页码和结构组织
    - 非常适合创建阅读摘要
+
+5. **PDF 页面便签**（可选开启，v1.8.0）
+   - 便签可拖拽 pin 在页面任意位置，自由缩放、可折叠成小脚注
+   - 一键将全部便签整理导出为一篇 Markdown 笔记，再次导出自动覆盖同一篇
+   - 底色与字号均可在设置里自定义
+   - 完全本地：便签内容存在插件 `data/` 目录下的 sidecar 文件（文件名为哈希，不含路径信息），
+     导出的笔记就是普通 vault 笔记，插件不上传任何内容
 
 ### 完整功能列表
 
