@@ -20,15 +20,17 @@ function fmtTime(d: Date): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** 纯函数（无头测试直接喂数据断言结构）。 */
+/**
+ * 纯函数（无头测试直接喂数据断言结构）。
+ * 正文不写 H1：导出文件名本身就是「便签 <PDF名>」，Obsidian 会把它显示为
+ * 行内标题，正文再重复一个主标题就成了双标题。
+ */
 export function buildNotesMarkdown(
-  pdfName: string,
   pdfPath: string,
   sortedNotes: PDFNote[],
   now: Date = new Date(),
 ): string {
   const lines: string[] = [];
-  lines.push(`# 便签 · ${pdfName}`, '');
   lines.push(`> 来源：\`${pdfPath}\``, `> 导出时间：${fmtTime(now)}`, '', '---', '');
   let page = 0;
   for (const n of sortedNotes) {
@@ -79,8 +81,7 @@ export async function exportNotesToMd(plugin: FleurPDFPlugin, layer: NoteLayer):
     return;
   }
   const { vault } = plugin.app;
-  const pdfName = pdfPath.split('/').pop() ?? pdfPath;
-  const md = buildNotesMarkdown(pdfName.replace(/\.pdf$/i, ''), pdfPath, notes);
+  const md = buildNotesMarkdown(pdfPath, notes);
 
   // 覆盖识别：先跟 sidecar 记的路径，失效再落默认路径
   let target = layer.currentExportPath;

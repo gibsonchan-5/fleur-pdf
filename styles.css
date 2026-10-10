@@ -4154,10 +4154,11 @@ body.fleur-pdf-dict-dragging {
   pointer-events: none;
 }
 
-/* 手写模式：便签让位给笔（可见但不可点，落墨穿过它） */
-body.fleur-pdf-ink-active .fleur-pdf-note {
-  pointer-events: none;
-}
+/* 手写模式的便签「让位给笔」不再用 pointer-events:none 一刀切
+   （桌面端开手写批注时鼠标与笔同体，整片禁用会让便签对鼠标全失能：
+   无法输入/拖拽/缩放/折叠）。现按指针类型分流：pen/touch 落便签由
+   overlay-engine.surfaceOfEvent 放行给书写/滚动，note-layer.ts 的交互
+   对非鼠标指针让位；鼠标落便签 = 正常操作。便签保持默认可交互。 */
 
 /* ── 便签本体：经典便签黄，无描边，靠投影分层 ──
    底色/字色/字号都走 body 级 CSS 变量（设置页便签颜色与字号由 main.ts
@@ -4318,14 +4319,14 @@ body.fleur-pdf-mobile .fleur-pdf-note-tools .fleur-pdf-ink-switch-btn svg {
 }
 
 /* ── 便签折叠态：收成一个小脚注 ──
-   宽度随摘要文字收缩（CSS 限宽 160px，JS 侧 applyGeometry 置 width:auto），
-   摘要在左（首行截断），折叠箭头 + 删除在右；正文与缩放手把整体隐藏，
-   高度由 JS 钉为 NOTE_FOLD_H，w/h 里记的展开尺寸原样保留。 */
+   摘要定宽 8em（约 8 个汉字，超出加省略号），保证一排折叠便签整齐划一；
+   折叠只留箭头（删除键隐藏，展开后才出现）；正文与缩放手把整体隐藏，
+   高度由 CSS 钉为 22px（= note-layer.ts 的 NOTE_FOLD_H），w/h 里记的展开尺寸原样保留。 */
 .fleur-pdf-note-preview {
   display: none;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
+  width: 8em;
   min-width: 0;
-  max-width: 160px;
   padding-left: 8px;
   font-size: 0.85em;
   line-height: 22px;
@@ -4336,6 +4337,10 @@ body.fleur-pdf-mobile .fleur-pdf-note-tools .fleur-pdf-ink-switch-btn svg {
 }
 .fleur-pdf-note.is-collapsed .fleur-pdf-note-preview {
   display: block;
+}
+/* 折叠态隐藏删除键：小脚注上不误删，展开后再显现 */
+.fleur-pdf-note.is-collapsed .fleur-pdf-note-del {
+  display: none;
 }
 .fleur-pdf-note.is-collapsed .fleur-pdf-note-text,
 .fleur-pdf-note.is-collapsed .fleur-pdf-note-resize {

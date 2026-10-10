@@ -897,11 +897,22 @@ export class InkOverlayEngine {
 
 	/* ============================ 输入 ============================ */
 
-	/** 事件落在哪一页的覆盖层上（只认我们的 canvas，掌压蹭到文本层不认）。 */
+	/**
+	 * 事件落在哪一页的覆盖层上（只认我们的 canvas，掌压蹭到文本层不认）。
+	 *
+	 * 便签例外放行：手写模式下便签不再整片 pointer-events:none（那会让桌面端
+	 * 鼠标对便签完全失能 —— 输入/拖拽/折叠全不可用），改由这里按指针类型分流：
+	 * pen / touch 落到便签上 → 认作其所在页，照常书写 / 滚动（与旧穿透行为一致）；
+	 * mouse 明确不放行 → 便签归鼠标操作。真机上没有鼠标落页的场景，行为不变。
+	 */
 	private surfaceOfEvent(e: Event): Surface | null {
 		const t = e.target as Element | null;
-		if (!t || !(t instanceof HTMLCanvasElement) || !t.hasClass('fleur-ink-canvas') || t.hasClass('is-draft')) {
-			return null;
+		if (!t) return null;
+		const onCanvas =
+			t instanceof HTMLCanvasElement && t.hasClass('fleur-ink-canvas') && !t.hasClass('is-draft');
+		if (!onCanvas) {
+			if ((e as PointerEvent).pointerType === 'mouse') return null;
+			if (!t.closest?.('.fleur-pdf-note-layer')) return null;
 		}
 		const pageEl = t.closest?.('.page[data-page-number]') as HTMLElement | null;
 		if (!pageEl) return null;

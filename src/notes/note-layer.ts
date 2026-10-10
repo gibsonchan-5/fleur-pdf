@@ -8,7 +8,10 @@
 //
 // 与 ink 层的差异只有两点：
 //   · 载体是 DOM div 而非 canvas（便签要原生文本编辑）；
-//   · 层常驻（不分手写/编辑模式），手写模式下由 CSS 让便签不吞笔（见 styles.css）。
+//   · 层常驻（不分手写/编辑模式）。手写模式按**指针类型**分流（不再整片
+//     pointer-events:none，否则桌面端鼠标对便签全失能）：pen/touch 落便签由
+//     overlay-engine.surfaceOfEvent 放行给书写/滚动，本文件的交互一律让位；
+//     鼠标落便签则正常操作（输入/拖拽/缩放/折叠）。
 //
 // 数据不随 DOM 走：notes 数组是唯一真相源，页面重建只是重画。
 
@@ -283,14 +286,19 @@ export class NoteLayer {
     if (note.collapsed === true) el.addClass('is-collapsed');
 
     const bar = el.createDiv('fleur-pdf-note-bar');
-    // 折叠摘要（仅折叠态可见）：首行文字，CSS 负责截断省略
+    // 折叠摘要（仅折叠态可见）：定宽 + 首行截断省略（CSS 负责），加载即刷文案
     const preview = bar.createDiv('fleur-pdf-note-preview');
+    if (note.collapsed === true) {
+      const line = note.text.split('\n').map((s) => s.trim()).find(Boolean) ?? '';
+      preview.setText(line || '（空白便签）');
+    }
     const fold = bar.createDiv('fleur-pdf-note-fold');
     setIcon(fold, note.collapsed === true ? 'chevron-right' : 'chevron-down');
     fold.setAttribute('aria-label', '折叠 / 展开便签');
     fold.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (this.yieldsToInk((e as PointerEvent).pointerType)) return;
       this.toggleFold(note, el);
     });
     const del = bar.createDiv('fleur-pdf-note-del fleur-pdf-ink-switch-btn');
@@ -299,6 +307,7 @@ export class NoteLayer {
     del.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (this.yieldsToInk((e as PointerEvent).pointerType)) return;
       this.removeNote(note.id);
     });
 
@@ -309,8 +318,11 @@ export class NoteLayer {
       note.text = ta.value;
     });
     ta.addEventListener('blur', () => void this.persist());
-    // 文本编辑区的指针事件不外溢（pdf.js / patcher 都不该看到它）
-    ta.addEventListener('pointerdown', (e) => e.stopPropagation());
+    // 文本编辑区的指针事件不外溢（pdf.js / patcher 都不该看到它）；
+    // 手写模式下 pen/手指要外溢给引擎落墨，只有鼠标（或编辑模式）才吞掉
+    ta.addEventListener('pointerdown', (e) => {
+      if (!this.yieldsToInk(e.pointerType)) e.stopPropagation();
+    });
 
     const grip = el.createDiv('fleur-pdf-note-resize');
 
@@ -341,10 +353,22 @@ export class NoteLayer {
 
   /* ------------------------------ 交互 ------------------------------ */
 
+  /**
+   * 手写模式下便签对非鼠标指针让位（overlay-engine.surfaceOfEvent 会把
+   * pen/touch 放行给书写/滚动）：这里同步不吞事件、不进拖拽/缩放/点击流程，
+   * 保证笔迹能穿过便签落墨、便签不会被笔尖误拖误删。鼠标不受影响。
+   */
+  private yieldsToInk(pointerType: string | undefined): boolean {
+    return (
+      document.body.classList.contains('fleur-pdf-ink-active') && pointerType !== 'mouse'
+    );
+  }
+
   /** 顶栏拖拽移动。位移 <4px 一律当点击，不写盘；折叠键/删除键是独立点击目标。 */
   private attachDrag(bar: HTMLElement, note: PDFNote, el: HTMLElement): void {
     bar.addEventListener('pointerdown', (e: PointerEvent) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (this.yieldsToInk(e.pointerType)) return;
       if ((e.target as HTMLElement | null)?.closest('.fleur-pdf-note-del, .fleur-pdf-note-fold')) return;
       const sf = this.surfaces.get(note.page);
       if (!sf) return;
@@ -352,8 +376,10 @@ export class NoteLayer {
       e.stopPropagation();
       const scale = this.scaleFor(note.page);
       const { w: pageW, h: pageH } = this.pageSize(sf, scale);
-      // 折叠态实际占位只有横条高，钳制按实际高度算，否则贴底拖不动
+      // 折叠态实际占位只有横条高 + 摘要芯片宽（不是存储的展开尺寸），
+      // 钳制按实际渲染尺寸算，否则右侧/底部会留一大段"拖不过去"的死区
       const effH = note.collapsed === true ? NOTE_FOLD_H / scale : note.h;
+      const effW = note.collapsed === true ? el.offsetWidth / scale : note.w;
       const sx = e.clientX;
       const sy = e.clientY;
       const ox = note.x;
@@ -367,7 +393,7 @@ export class NoteLayer {
       const onMove = (ev: PointerEvent) => {
         if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 4) return;
         moved = true;
-        note.x = Math.max(0, Math.min(ox + (ev.clientX - sx) / scale, Math.max(0, pageW - note.w)));
+        note.x = Math.max(0, Math.min(ox + (ev.clientX - sx) / scale, Math.max(0, pageW - effW)));
         note.y = Math.max(0, Math.min(oy + (ev.clientY - sy) / scale, Math.max(0, pageH - effH)));
         this.applyGeometry(note, el, this.scaleFor(note.page));
       };
@@ -387,6 +413,7 @@ export class NoteLayer {
   private attachResize(grip: HTMLElement, note: PDFNote, el: HTMLElement, sf: PageSurface): void {
     grip.addEventListener('pointerdown', (e: PointerEvent) => {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
+      if (this.yieldsToInk(e.pointerType)) return;
       e.preventDefault();
       e.stopPropagation();
       const scale = this.scaleFor(note.page);
