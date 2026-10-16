@@ -250,12 +250,20 @@ export class PDFPatcher {
   private static readonly TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
 
   /** 记录删除墓碑（删除保存成功之后调用；sidebar 的删除路径也走这里） */
-  recordDeletedAnnIds(annIds: string[]): void {
+  /**
+   * 记删除墓碑。会话内存（重启即失效）之外，传入 pdfPath 时同步落一份持久墓碑
+   * 到 store 数据 —— 跨设备同步开启后，对端旧数据会经同步副本回来，没有持久
+   * 墓碑「删了又复活」就无从防起（与 annotation-sync 的合并墓碑同一套）。
+   */
+  recordDeletedAnnIds(annIds: string[], pdfPath?: string | null): void {
     const now = Date.now();
     for (const [id, ts] of this.deletedAnnIds) {
       if (now - ts > PDFPatcher.TOMBSTONE_TTL_MS) this.deletedAnnIds.delete(id);
     }
     for (const id of annIds) this.deletedAnnIds.set(id, now);
+    if (pdfPath) {
+      void this.plugin.store.recordTombstones(pdfPath, annIds).catch(() => {});
+    }
   }
 
   private lastSnapshot: SelectionSnapshot | null = null;
@@ -531,6 +539,18 @@ export class PDFPatcher {
     new Notice('正在重新渲染标注…');
   }
 
+  /**
+   * 按路径重绘标注（跨设备同步合并完成后调用，与 restoreNow 同一套流水线，
+   * 但不检查「活动文件」也不弹 Notice —— 同步事件可能来自非活动文件路径）。
+   */
+  resyncPdf(filePath: string): void {
+    this.currentPagePath = filePath;
+    this.startPdfViewerWatcher();
+    // 同步事件优先：清掉排队中的重试链，避免被 scheduleRestore 的互斥规则吞掉
+    this.cancelPendingRestore();
+    this.scheduleRestore(filePath, 0);
+  }
+
   /** 诊断当前 PDF 的 DOM 结构（不依赖控制台，直接弹 Notice） */
   diagnose(): void {
     const file = this.plugin.app.workspace.getActiveFile();
@@ -570,18 +590,31 @@ export class PDFPatcher {
   /** 为当前 PDF 文件恢复所有已保存的标注 */
   async restoreAnnotationsForFile(filePath: string, attempt = 0): Promise<void> {
     const epoch = this.restoreEpoch;
-    const data = await this.plugin.store.load(filePath);
+    let data = await this.plugin.store.load(filePath);
     // 数据加载期间发生了删除（或文件切换）：本次持有的 data 已过期，立即中止
     if (epoch !== this.restoreEpoch) return;
+    // 跨设备同步：恢复前先拉合并（开关关闭时内部原样返回）。
+    // 远端新增批注由此收编、对端删除经墓碑生效 —— 这是「打开 PDF 就同步」的主通道。
+    try {
+      data = await this.plugin.annSync.pullMerge(filePath, this.plugin.store, data);
+      if (epoch !== this.restoreEpoch) return;
+    } catch (e) {
+      console.warn('[FleurPDF ann-sync] 恢复前合并失败（按本地数据继续）:', e);
+    }
     // 删除墓碑过滤：store 里不该再出现的已删标注（在途写入回写 / 同步拉回旧版）
-    // 一律跳过并写回净化后的数据 —— 没有这层，删除后「过不久又复活」无从根除
-    const resurrected = data.annotations.filter((a) => this.deletedAnnIds.has(a.id));
-    if (resurrected.length > 0) {
+    // 一律跳过并写回净化后的数据 —— 没有这层，删除后「过不久又复活」无从根除。
+    // 过滤来源 = 会话内存墓碑 + 随数据持久化的墓碑（跨设备同步开启后落盘）。
+    const tomb = data.tombstones ?? {};
+    const isDead = (id: string) => this.deletedAnnIds.has(id) || tomb[id] !== undefined;
+    const resurrected = data.annotations.filter((a) => isDead(a.id));
+    const resurrectedAi = (data.aiResults ?? []).filter((r) => isDead(r.id));
+    if (resurrected.length > 0 || resurrectedAi.length > 0) {
       console.warn(
-        `[FleurPDF] restore: ${resurrected.length} 条已删除标注重新出现在存储中（疑似在途写入回写或同步拉回旧版），已跳过并写回净化数据`,
+        `[FleurPDF] restore: ${resurrected.length} 条已删除标注（另有 AI 结果 ${resurrectedAi.length} 条）重新出现在存储中（疑似在途写入回写或同步拉回旧版），已跳过并写回净化数据`,
         resurrected.map((a) => a.id),
       );
-      data.annotations = data.annotations.filter((a) => !this.deletedAnnIds.has(a.id));
+      data.annotations = data.annotations.filter((a) => !isDead(a.id));
+      if (data.aiResults) data.aiResults = data.aiResults.filter((r) => !isDead(r.id));
       void this.plugin.store.save(data).catch(() => {});
     }
     if (!data.annotations || data.annotations.length === 0) {
@@ -1577,7 +1610,7 @@ export class PDFPatcher {
     data.annotations = data.annotations.filter((a) => a.id !== annId);
     await this.plugin.store.save(data);
     // 保存成功后记墓碑：此后 restore 一旦再见到该 id（回写/同步拉回），跳过并自愈
-    this.recordDeletedAnnIds([annId]);
+    this.recordDeletedAnnIds([annId], file.path);
     this.clearAnnotationDom(annId, target);
     this.pruneFlashSpans();
     this.removeCommentBubble(annId);
@@ -2185,7 +2218,7 @@ export class PDFPatcher {
       const removedIds = data.annotations.filter(a => a.comment === comment).map(a => a.id);
       data.annotations = data.annotations.filter(a => a.comment !== comment);
       await this.plugin.store.save(data);
-      this.recordDeletedAnnIds(removedIds);
+      this.recordDeletedAnnIds(removedIds, file.path);
       void this.plugin.getSidebar()?.refresh(file.path);
     }
     bubble.remove();

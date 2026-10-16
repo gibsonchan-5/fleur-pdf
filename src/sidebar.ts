@@ -117,7 +117,9 @@ export class SidebarView extends ItemView {
       this.plugin.search.clearCache();
     }
 
-    this.data = await this.plugin.store.load(file.path);
+    // 跨设备同步：侧栏刷新前先拉合并（开关关闭时内部原样返回）——
+    // 副本刚被同步软件拉回来、PDF 视图未聚焦时，这是侧栏跟上进度的通道
+    this.data = await this.plugin.annSync.pullMerge(file.path, this.plugin.store);
     this.render();
 
     // 恢复滚动位置（新 DOM 渲染后）
@@ -915,7 +917,7 @@ export class SidebarView extends ItemView {
     data.annotations = data.annotations.filter(a => a.id !== ann.id);
     await this.plugin.store.save(data);
     // 保存成功后记墓碑：此后 restore 一旦再见到该 id（在途写入回写/同步拉回），跳过并自愈
-    this.plugin.patcher?.recordDeletedAnnIds([ann.id]);
+    this.plugin.patcher?.recordDeletedAnnIds([ann.id], file.path);
     this.clearAnnotationStyles(ann);
     this.plugin.patcher?.removeCommentBubble(ann.id);
     // 兜底清扫：该页上不属于任何剩余标注的气泡一并移除

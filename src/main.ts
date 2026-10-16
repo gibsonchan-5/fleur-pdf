@@ -17,6 +17,7 @@ import { applyMobileBodyClass, isMobileUI } from './platform';
 import { InkEngine } from './mobile/ink-engine';
 import { OcrEngine } from './mobile/ocr';
 import { InkSync } from './mobile/ink-sync';
+import { AnnotationSync } from './annotation-sync';
 import { InkUI } from './mobile/ink-ui';
 import { InkDebugRecorder } from './mobile/ink-debug';
 import { installInkStyles, removeInkStyles } from './mobile/ink-styles';
@@ -38,6 +39,9 @@ export default class FleurPDFPlugin extends Plugin {
 
   /** 手写笔迹跨设备同步（inkCrossDeviceSync 开关，默认关；详见 mobile/ink-sync.ts） */
   inkSync = new InkSync(this.app, () => this.settings.inkCrossDeviceSync === true);
+
+  /** 文本批注跨设备同步（annCrossDeviceSync 开关，默认关；详见 annotation-sync.ts） */
+  annSync = new AnnotationSync(this.app, () => this.settings.annCrossDeviceSync === true);
 
   /** 移动端手写批注：内置墨迹引擎的接入层。桌面端也会构造，但不会激活。 */
   inkEngine: InkEngine;
@@ -138,6 +142,23 @@ export default class FleurPDFPlugin extends Plugin {
     this.app.workspace.trigger('fleur-pdf:wordbook-changed');
   }
 
+  /**
+   * 立即同步当前 PDF 的文本批注（命令与设置开关共用）：
+   * 拉取合并 → 重绘标注 → 刷新侧栏。开关关闭时 pullMerge 原样返回，等价于重绘。
+   */
+  async syncActivePdfAnnotations(): Promise<void> {
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension !== 'pdf') {
+      new Notice('当前活动文件不是 PDF');
+      return;
+    }
+    const local = await this.store.load(file.path);
+    const merged = await this.annSync.pullMerge(file.path, this.store, local);
+    this.patcher.resyncPdf(file.path);
+    void this.getSidebar()?.refresh(file.path);
+    new Notice(`批注同步完成：当前 ${merged.annotations.length} 条批注`, 2500);
+  }
+
   async onload() {
     await this.loadSettings();
     this.applyBubbleVisibility();
@@ -146,6 +167,8 @@ export default class FleurPDFPlugin extends Plugin {
     this.wordbookSync.init();
 
     this.store = new AnnotationStore(this.app, this.manifest.id);
+    // 落盘后推写同步副本（开关关闭时 pushSyncFile 内部直接跳过，零行为差异）
+    this.store.syncHook = (data) => { void this.annSync.pushSyncFile(data.fileId, data); };
     this.patcher = new PDFPatcher(this);
     this.patcher.install();
     this.search = new PdfSearchService(this.app);
@@ -234,6 +257,12 @@ export default class FleurPDFPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: 'sync-annotations',
+      name: '同步批注（跨设备拉取 / 推送）',
+      callback: () => { void this.syncActivePdfAnnotations(); }
+    });
+
+    this.addCommand({
       id: 'diagnose-pdf',
       name: '诊断当前 PDF 结构',
       callback: () => { this.patcher.diagnose(); }
@@ -255,6 +284,31 @@ export default class FleurPDFPlugin extends Plugin {
         }
       })
     );
+
+    // ── 跨设备同步兜底（快通道）：同步副本被 Remotely Save / iCloud 拉回时，vault
+    // 的 modify/create 事件会路过这里 —— 防抖 800ms 后拉取合并并重绘。注意 vault
+    // 对 json 文件的事件受「检测所有文件扩展名」等设置影响，可能不触发 —— 那也没
+    // 关系，打开 PDF（restore 拉合并）与手动命令是确定性兜底，这条只是更快。 ──
+    let annSyncWatchTimer: number | null = null;
+    const annSyncWatch = (f: { path?: string } | null) => {
+      const p = f?.path;
+      if (typeof p !== 'string' || !this.annSync.isSyncFile(p)) return;
+      if (annSyncWatchTimer) window.clearTimeout(annSyncWatchTimer);
+      annSyncWatchTimer = window.setTimeout(() => {
+        annSyncWatchTimer = null;
+        void (async () => {
+          const pdfPath = await this.annSync.pdfPathOfSyncFile(p);
+          if (!pdfPath) return;
+          const local = await this.store.load(pdfPath);
+          await this.annSync.pullMerge(pdfPath, this.store, local);
+          this.patcher.resyncPdf(pdfPath);
+          void this.getSidebar()?.refresh(pdfPath);
+          console.debug('[FleurPDF ann-sync] 同步副本变更，已合并并重绘:', pdfPath);
+        })().catch((e) => console.warn('[FleurPDF ann-sync] 副本事件合并失败（不影响本地批注）', e));
+      }, 800);
+    };
+    this.registerEvent(this.app.vault.on('modify', annSyncWatch));
+    this.registerEvent(this.app.vault.on('create', annSyncWatch));
 
     // 默认打开侧边栏
     // 问题根因：onLayoutReady 后 Obsidian 可能还在异步恢复工作区状态，

@@ -74,6 +74,15 @@ export interface FleurSettings {
    */
   inkCrossDeviceSync: boolean;
 
+  /**
+   * 文本批注（高亮/划线/批注/AI 结果）跨设备同步。默认关。
+   * 开启后每本有批注的 PDF 在 vault 内生成可见同步副本
+   * （FleurPDF/data/annotations/<文件名>.<哈希>.json），随 Remotely Save / iCloud
+   * 等同步到其他设备；双向合并，编辑冲突按修改时刻后写者胜，删除走持久化墓碑
+   * 不复活。每台设备需分别开启。
+   */
+  annCrossDeviceSync: boolean;
+
   // ── 截图与 OCR（手写模式相机工具） ──
   /**
    * 是否启用本地 OCR（tesseract.js）。默认关闭——不需要 OCR 的用户
@@ -228,6 +237,7 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   annotationSort: 'time',
   desktopInk: false,
   inkCrossDeviceSync: false,
+  annCrossDeviceSync: false,
   ocrEnabled: false,
   snapOcrEngine: 'local',
   ocrLangs: 'chi_sim+eng',
@@ -795,6 +805,23 @@ export class FleurSettingTab extends PluginSettingTab {
           this.plugin.settings.inkCrossDeviceSync = value;
           await this.plugin.saveSettings();
           void this.plugin.inkUI?.syncNow();
+        }));
+
+    // 文本批注跨设备同步：开启后立即对当前 PDF 拉取合并一次（让旧批注马上到位）。
+    new Setting(containerEl)
+      .setName('批注跨设备同步')
+      .setDesc(
+        '开启后，每本有批注的 PDF 会在 vault 内生成一份可见副本（FleurPDF/data/annotations/），'
+        + '随 Remotely Save / iCloud 等同步到其他设备；双向合并，编辑冲突按修改时刻后写者胜，'
+        + '删除走墓碑不会复活，需在每台设备上分别开启。'
+        + '同步时机：打开 PDF、每次批注落盘、检测到副本变更，也可用命令「同步批注」手动触发。',
+      )
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.annCrossDeviceSync)
+        .onChange(async (value) => {
+          this.plugin.settings.annCrossDeviceSync = value;
+          await this.plugin.saveSettings();
+          if (value) void this.plugin.syncActivePdfAnnotations();
         }));
 
     // 手写批注的其余设置只在移动端 UI 下渲染（真机，或桌面开启手写批注）——
