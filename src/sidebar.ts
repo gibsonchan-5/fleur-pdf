@@ -77,7 +77,18 @@ export class SidebarView extends ItemView {
   getDisplayText() { return '批注总览'; }
   getIcon() { return 'file-text'; }
 
-  async onOpen() { await this.refresh(); }
+  async onOpen() {
+    // 浮动回顶钮显隐：滚过一屏才淡入（顶栏按钮会随列表滚走，这是滚远后的回顶入口）
+    const scrollEl = this.getScrollEl();
+    if (scrollEl) {
+      this.registerDomEvent(scrollEl, 'scroll', () => {
+        const float = scrollEl.querySelector('.fleur-sidebar-backtop-float')
+          ?? scrollEl.parentElement?.querySelector('.fleur-sidebar-backtop-float');
+        float?.toggleClass('is-visible', scrollEl.scrollTop > 160);
+      }, { passive: true });
+    }
+    await this.refresh();
+  }
 
   async refresh(targetPath?: string | null) {
     // 保存当前滚动位置（contentEl 或 .view-content 是 Obsidian 的滚动容器）
@@ -163,8 +174,22 @@ export class SidebarView extends ItemView {
     const count = titleWrap.createDiv({ text: `${this.data?.annotations.length ?? 0}` });
     count.addClass('fleur-sidebar-header-count');
 
+    // 右侧操作区：回到顶部 + 导出笔记
+    const actions = header.createDiv();
+    actions.addClass('fleur-sidebar-header-actions');
+
+    // 回到顶部按钮（顶栏已随列表滚动，滚远后由浮动回顶钮接棒，见 render 末尾）
+    const backTopBtn = actions.createEl('button');
+    backTopBtn.title = '回到顶部';
+    backTopBtn.addClass('fleur-sidebar-backtop-btn');
+    appendSvg(backTopBtn, SVG_ATTRS, [
+      { tag: 'line', attrs: { x1: '12', y1: '19', x2: '12', y2: '5' } },
+      { tag: 'polyline', attrs: { points: '5 12 12 5 19 12' } },
+    ]);
+    backTopBtn.addEventListener('click', () => { this.scrollToTop(); });
+
     // 导出笔记按钮
-    const exportBtn = header.createEl('button');
+    const exportBtn = actions.createEl('button');
     exportBtn.title = '导出所有批注为笔记';
     exportBtn.addClass('fleur-sidebar-export-btn');
     appendSvg(exportBtn, SVG_ATTRS, [
@@ -215,6 +240,39 @@ export class SidebarView extends ItemView {
         this.renderAnnotation(section, ann);
       });
     });
+
+    this.ensureBacktopFloat();
+  }
+
+  /** 滚动容器：contentEl 或 .view-content（与 refresh 里的滚动位置保存同源） */
+  private getScrollEl(): HTMLElement | null {
+    return (this.contentEl?.closest('.view-content') ?? this.contentEl) as HTMLElement | null;
+  }
+
+  /** 平滑滚回列表顶端（顶栏按钮与浮动回顶钮共用） */
+  private scrollToTop(): void {
+    this.getScrollEl()?.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  /**
+   * 浮动回顶钮：挂在 .workspace-leaf-content（不随列表滚动的宿主）上，
+   * 滚过一屏由 onOpen 里的 scroll 监听淡入 —— 顶栏按钮会随列表滚走，
+   * 滚远后这是唯一的回顶入口。每次 render 重建内容，这里幂等重建浮钮。
+   */
+  private ensureBacktopFloat(): void {
+    const host = this.contentEl.parentElement;
+    if (!host) return;
+    host.querySelector('.fleur-sidebar-backtop-float')?.remove();
+    const float = document.createElement('div');
+    float.className = 'fleur-sidebar-backtop-float';
+    float.setAttribute('aria-label', '回到顶部');
+    float.setAttribute('role', 'button');
+    appendSvg(float, SVG_ATTRS, [
+      { tag: 'line', attrs: { x1: '12', y1: '19', x2: '12', y2: '5' } },
+      { tag: 'polyline', attrs: { points: '5 12 12 5 19 12' } },
+    ]);
+    float.addEventListener('click', () => { this.scrollToTop(); });
+    host.appendChild(float);
   }
 
   // ── 全文检索 ──
@@ -856,10 +914,14 @@ export class SidebarView extends ItemView {
     const data = await this.plugin.store.load(file.path);
     data.annotations = data.annotations.filter(a => a.id !== ann.id);
     await this.plugin.store.save(data);
+    // 保存成功后记墓碑：此后 restore 一旦再见到该 id（在途写入回写/同步拉回），跳过并自愈
+    this.plugin.patcher?.recordDeletedAnnIds([ann.id]);
     this.clearAnnotationStyles(ann);
     this.plugin.patcher?.removeCommentBubble(ann.id);
     // 兜底清扫：该页上不属于任何剩余标注的气泡一并移除
     this.plugin.patcher?.sweepBubblesForPage(ann.page, new Set(data.annotations.map(a => a.id)));
+    // 全文档再扫一遍：锚点页 ≠ 标注页的漏网气泡也清掉
+    this.plugin.patcher?.sweepOrphanBubbles(new Set(data.annotations.map(a => a.id)));
     new Notice('已删除', 2000);
     await this.refresh();
   }

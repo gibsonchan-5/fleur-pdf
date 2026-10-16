@@ -83,7 +83,7 @@ Then copy `main.js`, `manifest.json`, and `styles.css` to your vault's plugin fo
 4. Configure the Base URL if using a custom endpoint
 5. Click "Test Connection" to verify
 
-**Security Note**: Your API Key is stored locally in Obsidian's data and never leaves your device except when making API calls.
+**Security Note**: Your API Key is stored locally only — by default in Obsidian's system keychain (`SecretStorage`), not in `data.json`, so it never syncs with your vault (you can opt into plain `data.json` storage in settings). Keys are sent solely to the AI endpoint you configure. Apart from your configured AI endpoint and the built-in dictionary sources (Youdao Dictionary / dictionaryapi.dev, which receive only the word being looked up), the plugin sends nothing to any server and has no telemetry.
 
 ### Annotation Settings
 
@@ -306,7 +306,7 @@ npm run build
 4. 如果使用自定义端点，配置 Base URL
 5. 点击"测试连接"验证设置
 
-**安全说明**：主 AI 与视觉模型两把 API Key 默认存入 Obsidian 系统钥匙串（`SecretStorage`），不写入 `data.json`，因此不会随 vault 同步上传；只有在设置里显式把「密钥保存位置」改为 data.json 时，密钥才会以明文随 vault 同步。除调用你所配置的 AI / 词典端点外，插件不向任何服务器发送笔记内容，也没有任何遥测或上报。
+**安全说明**：主 AI 与视觉模型两把 API Key 默认存入 Obsidian 系统钥匙串（`SecretStorage`），不写入 `data.json`，因此不会随 vault 同步上传；只有在设置里显式把「密钥保存位置」改为 data.json 时，密钥才会以明文随 vault 同步。除调用你所配置的 AI 端点与内置词典源（有道词典 / dictionaryapi.dev，仅发送所查询单词本身）外，插件不向任何服务器发送笔记内容，也没有任何遥测或上报。
 
 ### 批注设置
 

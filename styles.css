@@ -372,9 +372,7 @@
 }
 
 .fleur-sidebar-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  /* 不驻留：顶栏随批注列表一起滚动（此前 sticky 常驻顶部，列表一长就占死可视区） */
   padding: 14px 20px 12px;
   background: var(--background-primary);
   border-bottom: 1px solid var(--background-modifier-border);
@@ -405,6 +403,35 @@
   color: var(--text-muted);
 }
 
+.fleur-sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 回到顶部（顶栏内，导出笔记旁；顶栏随列表滚动，滚远后由浮动回顶钮接棒） */
+.fleur-sidebar-backtop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.fleur-sidebar-backtop-btn:hover {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
+}
+
+.fleur-sidebar-backtop-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
 .fleur-sidebar-export-btn {
   display: flex;
   align-items: center;
@@ -428,6 +455,60 @@
 
 .fleur-sidebar-body {
   padding: 12px 16px 24px;
+}
+
+/* ── 浮动回顶钮 ──
+   顶栏随列表滚动后，滚远了顶栏里的回顶按钮也看不见，靠这颗浮动圆钮回顶。
+   挂在 .workspace-leaf-content（不随列表滚动的宿主）上，滚过一屏才淡入。 */
+.workspace-leaf-content[data-type="fleur-sidebar"] {
+  position: relative;
+}
+
+.fleur-sidebar-backtop-float {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  width: 30px;
+  height: 30px;
+  border-radius: 15px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+  z-index: 20;
+}
+
+.fleur-sidebar-backtop-float.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.fleur-sidebar-backtop-float:hover {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
+}
+
+.fleur-sidebar-backtop-float svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 真机触摸目标放大 */
+body.fleur-pdf-native-mobile .fleur-sidebar-backtop-float {
+  width: 38px;
+  height: 38px;
+}
+
+body.fleur-pdf-native-mobile .fleur-sidebar-backtop-float svg {
+  width: 17px;
+  height: 17px;
 }
 
 .fleur-sidebar-section {
@@ -897,39 +978,57 @@
   z-index: 30;
 }
 
+/* 批注气泡显隐开关（设置 → 标注设置「PDF 页内显示批注气泡」）。
+   body 类由 main.ts applyBubbleVisibility 维护；节点保留在 DOM，
+   开关切回来自动复现，批注数据与侧边栏不受影响。 */
+body.fleur-pdf-hide-bubbles .fleur-comment-bubble {
+  display: none;
+}
+
+/* 图标造型对齐 fleur-annotation 的批注气泡：无底色圆点，裸 SVG + 半透明，
+   悬停（或触控开合）后变实 —— 压在 PDF 正文上不抢视觉 */
 .fleur-comment-bubble-icon {
-  width: 18px;
-  height: 18px;
-  background: #5b6abf;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  opacity: 0.55;
   cursor: pointer;
-  transition: transform 0.15s ease;
+  transition: opacity 0.15s ease;
 }
 
-.fleur-comment-bubble-icon:hover {
-  transform: scale(1.15);
+.fleur-comment-bubble-icon:hover,
+.fleur-comment-bubble.is-open .fleur-comment-bubble-icon {
+  opacity: 1;
 }
 
+/* 弹卡底色对齐 fleur-epub 批注卡（--background-secondary + 主题边框）；
+   首行避让右上角操作钮由 textEl 内的浮动占位块（.fleur-comment-bubble-spacer）完成，
+   弹卡本身不留右侧空白 —— 只有第一行让位，第二行起恢复全宽 */
 .fleur-comment-bubble-popup {
   position: absolute;
-  left: 22px;
+  left: 18px;
   top: -8px;
   min-width: 140px;
   max-width: 280px;
-  background: rgba(91, 106, 191, 0.85);
-  color: #fff;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.5;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.2);
   word-break: break-word;
   display: none;
   z-index: 50;
+}
+
+/* 浮动占位：宽度=操作钮组实际占位（2×20px + gap + 右偏移），高度=一行文字。
+   浮动只影响其高度内的行盒 → 首行右移让位，后续行恢复全宽 */
+.fleur-comment-bubble-spacer {
+  float: right;
+  width: 48px;
+  height: 18px;
 }
 
 .fleur-comment-bubble-popup .is-clamped {
@@ -942,7 +1041,7 @@
 
 .fleur-comment-bubble-popup .fleur-comment-toggle {
   font-size: 11px;
-  color: rgba(255,255,255,0.7);
+  color: var(--text-accent);
   cursor: pointer;
   margin-top: 4px;
   user-select: none;
@@ -950,12 +1049,66 @@
 }
 
 .fleur-comment-bubble-popup .fleur-comment-toggle:hover {
-  color: #fff;
   text-decoration: underline;
 }
 
 .fleur-comment-bubble:hover .fleur-comment-bubble-popup {
   display: block;
+}
+
+/* 点按开合（is-open 由 patcher toggleBubbleOpen 维护）：
+   移动端没有 hover，点按图标是触摸屏上查看批注的唯一入口；桌面与 hover 并存 */
+.fleur-comment-bubble.is-open .fleur-comment-bubble-popup {
+  display: block;
+}
+
+/* 弹层操作钮：编辑 / 删除（仅带 annId 的气泡创建）。
+   对齐 fleur-epub：绝对定位在弹卡右上角，20px 小按钮 + 主题色；
+   桌面端悬停才显形（fleup 同款），不悬停时完全不挡批注文字 */
+.fleur-comment-bubble-actions {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/* 操作钮显形条件（fleur-epub 同款）：悬停弹卡本体才出现 ——
+   只悬停图标看内容时按钮保持隐形；is-open 仅真机（点开弹卡后无 hover 可依赖）。
+   桌面端 is-open 不会被写入（patcher 侧按 Platform.isMobile 门控）。 */
+.fleur-comment-bubble-popup:hover .fleur-comment-bubble-actions,
+body.fleur-pdf-native-mobile .fleur-comment-bubble.is-open .fleur-comment-bubble-actions {
+  opacity: 1;
+}
+
+.fleur-comment-bubble-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  background: var(--background-primary);
+  border: none;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.fleur-comment-bubble-action:hover {
+  color: var(--text-normal);
+}
+
+.fleur-comment-bubble-action.is-danger:hover {
+  color: var(--text-error);
+}
+
+.fleur-comment-bubble-action svg {
+  width: 13px;
+  height: 13px;
 }
 
 .fleur-comment-bubble-tail {
@@ -966,7 +1119,7 @@
   height: 0;
   border-top: 6px solid transparent;
   border-bottom: 6px solid transparent;
-  border-right: 7px solid rgba(91, 106, 191, 0.85);
+  border-right: 7px solid var(--background-secondary);
 }
 
 /* ── Utility classes ── */
@@ -1855,8 +2008,12 @@ body.fleur-pdf-mobile .fleur-pdf-ink-eraser-pop .fleur-pdf-ink-modes {
 
 /* ── 移动端：批注浮动菜单按触摸尺寸放大 ──
    桌面端 28px 的按钮在平板上点不准（真机反馈）；移动端整体放大到 40px 命中区，
-   并给容器加横向滚动兜住小屏（按钮变多时不会溢出屏幕）。 */
-body.fleur-pdf-mobile .fleur-context-panel {
+   并给容器加横向滚动兜住小屏（按钮变多时不会溢出屏幕）。
+   ⚠️ 挂 body.fleur-pdf-native-mobile（只看 Platform.isMobile）：这批规则按
+   移动款 DOM 写死（两行 4+4 grid 依赖把手占位与分隔线隐藏），而菜单 DOM
+   由 Platform.isMobile 门控 —— desktopInk 开启时是桌面款 DOM，若命中会
+   图标互相叠压（1.8.x 实测）。 */
+body.fleur-pdf-native-mobile .fleur-context-panel {
   box-sizing: border-box;
   /* 两行 4+4 网格：第 1 列是拖拽把手（跨两行），第 2–5 列上下对齐 ——
      行一（三色点 + 直线）与行二（复制/批注/询问AI/译）逐列对齐。
@@ -1869,31 +2026,31 @@ body.fleur-pdf-mobile .fleur-context-panel {
   justify-content: center;
 }
 /* 把手占第 1 列、跨两行拉伸，右侧四个内容列与下一行逐列对齐 */
-body.fleur-pdf-mobile .fleur-context-grip {
+body.fleur-pdf-native-mobile .fleur-context-grip {
   grid-column: 1;
   grid-row: 1 / span 2;
 }
 /* 色点分组容器不参与网格布局，让三个点直接落进第 2–4 列 */
-body.fleur-pdf-mobile .fleur-context-group {
+body.fleur-pdf-native-mobile .fleur-context-group {
   display: contents;
 }
 /* 网格下 flex 换行 hack 与竖分隔线都不再需要 */
-body.fleur-pdf-mobile .fleur-context-rowbreak,
-body.fleur-pdf-mobile .fleur-context-sep {
+body.fleur-pdf-native-mobile .fleur-context-rowbreak,
+body.fleur-pdf-native-mobile .fleur-context-sep {
   display: none;
 }
 
 /* 0.4.1 曾把触摸目标放到 40px，真机反馈「菜单太大」—— 现在收到 32px：
    仍高于触屏 44px 指南的单指舒适区下限之上可接受的范围，
    换来整条菜单收窄约 1/4，不挡正文。 */
-body.fleur-pdf-mobile .fleur-context-item {
+body.fleur-pdf-native-mobile .fleur-context-item {
   width: 32px;
   height: 32px;
   flex: 0 0 auto;
   border-radius: 7px;
 }
 
-body.fleur-pdf-mobile .fleur-context-item svg {
+body.fleur-pdf-native-mobile .fleur-context-item svg {
   /* Obsidian app.css 的 svg.svg-icon{width:var(--icon-size)} 在移动端
      WebView 不可靠，显式给尺寸（桌面端沿用 var(--icon-size)，不动）。 */
   width: 15px;
@@ -1901,17 +2058,33 @@ body.fleur-pdf-mobile .fleur-context-item svg {
   flex: 0 0 auto;
 }
 
-body.fleur-pdf-mobile .fleur-context-group {
+body.fleur-pdf-native-mobile .fleur-context-group {
   gap: 2px;
 }
 
-body.fleur-pdf-mobile .fleur-context-item svg.fleur-context-hl-dot {
+body.fleur-pdf-native-mobile .fleur-context-item svg.fleur-context-hl-dot {
   width: 18px;
   height: 18px;
 }
 
-body.fleur-pdf-mobile .fleur-context-sep {
+body.fleur-pdf-native-mobile .fleur-context-sep {
   margin: 0 2px;
+}
+
+/* 批注气泡操作按钮：真机触摸目标放大到 26px（20px 点不准） */
+body.fleur-pdf-native-mobile .fleur-comment-bubble-action {
+  width: 26px;
+  height: 26px;
+}
+
+body.fleur-pdf-native-mobile .fleur-comment-bubble-action svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 真机按钮放大后浮动占位同步加宽，首行不压图标 */
+body.fleur-pdf-native-mobile .fleur-comment-bubble-spacer {
+  width: 60px;
 }
 
 /* ══════════ 侧边栏批注卡片：触摸设备上的操作按钮 ══════════

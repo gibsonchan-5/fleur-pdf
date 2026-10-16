@@ -36,6 +36,13 @@ export interface FleurSettings {
   highlightColors: string[]; // 3种高亮颜色
   underlineColor: string; // 下划线颜色
 
+  /**
+   * PDF 页内是否显示批注气泡（默认 true = 现状）。
+   * false 时由 body.fleur-pdf-hide-bubbles 类 + CSS 隐藏页面上已有的与
+   * 新建的气泡节点；批注数据与侧边栏完全不受影响。桌面/移动端共用。
+   */
+  showCommentBubbles: boolean;
+
   // 笔记导出
   noteFolder: string;
 
@@ -214,6 +221,7 @@ export const DEFAULT_SETTINGS: FleurSettings = {
   annotationLimit: 250,
   highlightColors: ['#D4A017', '#2979C4', '#D32F2F'], // 深金、深蓝、深红
   underlineColor: '#6B0000', // 极深红
+  showCommentBubbles: true,
   noteFolder: 'FleurReader',
   sidebarPosition: 'right',
   sidebarDefaultOpen: true,
@@ -622,6 +630,18 @@ export class FleurSettingTab extends PluginSettingTab {
 
     // ── 标注设置 ──
     new Setting(containerEl).setName('标注设置').setHeading();
+
+    // 批注气泡显隐（body 类开关，见 main.ts applyBubbleVisibility）
+    new Setting(containerEl)
+      .setName('PDF 页内显示批注气泡')
+      .setDesc('关闭后页面上不再显示批注气泡图标（悬浮弹层随之隐藏）；批注仍保留，可在批注侧边栏查看与删除')
+      .addToggle(toggle => toggle
+        .setValue(this.plugin.settings.showCommentBubbles !== false)
+        .onChange(async (value) => {
+          this.plugin.settings.showCommentBubbles = value;
+          await this.plugin.saveSettings();
+          this.plugin.applyBubbleVisibility();
+        }));
 
     // 三种高亮颜色
     const hlColors = this.plugin.settings.highlightColors;

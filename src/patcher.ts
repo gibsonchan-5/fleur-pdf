@@ -12,7 +12,6 @@ import type { Annotation } from './types';
 import { AIChatPanel } from './ai-chat-modal';
 import { markdownToPlain } from './md-utils';
 import { normalizeWhitespace } from './text-utils';
-import { isMobileUI } from './platform';
 import { getFleurDictBridge, isDictWord, type FleurDictBridge } from './dict-bridge';
 import { StandaloneDictPopup } from './standalone-dict';
 
@@ -104,10 +103,17 @@ function iconCopy(c: Node) {
     { tag: 'path', attrs: { d: 'M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1' } },
   ]);
 }
-/** 是否处于移动端 UI（真机移动端，或桌面开启了「预览移动端形态」）。
- *  图标 / 面板 DOM 的移动端专属差异一律以此门控，保证桌面端与 1.5.15 逐字节同构。 */
-function isMobileBody(): boolean {
-  return document.body.classList.contains('fleur-pdf-mobile');
+/** 是否**真机**移动端（Platform.isMobile）。
+ *
+ * 文字批注菜单（选区自动弹出、面板 DOM、底部定位、点按清除）一律只认它：
+ * 桌面端——包括开启「桌面端手写批注」时——菜单保持桌面语义（右键光标近点
+ * 弹出、桌面款 DOM 与 1.5.15 一致）。desktopInk 只接管手写批注 UI，不该把
+ * 触屏才需要的菜单行为（底部居中避滑杆、无右键的入口）带进桌面。
+ * 1.8.x 曾按 body 类门控，desktopInk 开启后菜单跟着走移动款、且选区自动弹
+ * 与右键各弹一次（先底部后近点），属回归，已收回。
+ */
+function isRealMobile(): boolean {
+  return Platform.isMobile;
 }
 /** 划线图标：描边用「用户的划线颜色」。该颜色是为与画到正文上的线保持一致而设的
  *  （默认 #6B0000 深红），但在深色主题下会融进背景，看上去像「图标没显示」——
@@ -117,7 +123,7 @@ function iconUnderlineSolid(c: Node, color: string) {
   const svg = svgIcon(c, color, [
     { tag: 'line', attrs: { x1: '3', y1: '18', x2: '21', y2: '18' } },
   ]);
-  if (isMobileBody()) svg.classList.add('fleur-context-ul');
+  if (isRealMobile()) svg.classList.add('fleur-context-ul');
   return svg;
 }
 function iconUnderlineWavy(c: Node, color: string) {
@@ -223,6 +229,35 @@ export class PDFPatcher {
   /** 面板请求的代际号：让 await 期间被超越的旧请求自行作废（见 showContextMenu）。 */
   private contextMenuEpoch = 0;
   private commentBubbles: CommentBubble[] = [];
+
+  /**
+   * 会话内每个文件最近一次成功读到的批注数（恢复兜底 A 用）。
+   * store.load 对 exists/read 异常静默返回空 —— sidecar 尚未同步到位
+   * （OneDrive 占位 / Remotely Save 未跑完）时恢复会拿 0 条「成功」结束，
+   * 之后没有任何事件再触发恢复，表现为「侧边栏有批注、PDF 内无高亮」。
+   * 记住已知非空数，读到 0 且已知非空时判定可疑，延迟复查一轮。
+   */
+  private lastKnownAnnCount = new Map<string, number>();
+
+  /**
+   * 会话级删除墓碑（annId → 删除时刻）。store 无锁无版本，任何 load→改→save
+   * 写入方与删除交错（丢更新）、或 Remotely Save 把云端旧版 data JSON 拉回，
+   * 都会让已删标注重新出现在 store —— restore 只信 store，就会原地复活。
+   * 墓碑让 restore 跳过这些 id 并把净化后的数据写回（自愈）。
+   * 24h 过期清理：真正的删除早该生效，过期墓碑不再拦截。
+   */
+  private deletedAnnIds = new Map<string, number>();
+  private static readonly TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
+
+  /** 记录删除墓碑（删除保存成功之后调用；sidebar 的删除路径也走这里） */
+  recordDeletedAnnIds(annIds: string[]): void {
+    const now = Date.now();
+    for (const [id, ts] of this.deletedAnnIds) {
+      if (now - ts > PDFPatcher.TOMBSTONE_TTL_MS) this.deletedAnnIds.delete(id);
+    }
+    for (const id of annIds) this.deletedAnnIds.set(id, now);
+  }
+
   private lastSnapshot: SelectionSnapshot | null = null;
   /** 快照有效期：活选区被清空后，右键仍可用最近一次选区 */
   private static readonly SNAPSHOT_TTL_MS = 10000;
@@ -265,15 +300,16 @@ export class PDFPatcher {
     document.addEventListener('mouseup', this.boundMouseUp, true);
     document.addEventListener('keydown', this.boundKeyDown, true);
 
-    // 移动端：长按选字会被 WebView 的原生文本选择接管，`contextmenu` 不派发，
+    // 真机移动端：长按选字会被 WebView 的原生文本选择接管，`contextmenu` 不派发，
     // 于是批注菜单永远不出现（真机 0.3.0 反馈：选中了文字，但没有任何菜单）。
     // 改用 `selectionchange` 驱动 —— 选区**停手 300ms** 后自动弹出，与手势类型无关。
-    // 桌面端保持右键语义，不挂这个监听。
+    // ⚠️ 只在真机注册：桌面端（含「桌面端手写批注」模式）有真右键，菜单走右键
+    // 近点通道，不该在拖选后自动弹底部菜单（1.8.x 回归，见 isRealMobile 注释）。
     //
     // ⚠️ 只挂这一个监听，与 FleurEPUB 一字不差。0.4.4 曾额外挂 touchstart/move/end
     // 做「手势静默期」，但拖原生选择手柄时 WebView 根本不向页面派发这些事件，
     // 那些标志位在真机恒为假 —— 除增加复杂度外没有任何作用，已全部移除。
-    if (isMobileUI(this.plugin)) {
+    if (Platform.isMobile) {
       this.boundSelectionChange = () => this.onSelectionChange();
       document.addEventListener('selectionchange', this.boundSelectionChange);
       // 移动端「点按已有标注 → 清除菜单」：真机反馈在移动端没有右键入口，
@@ -352,7 +388,21 @@ export class PDFPatcher {
         )
       );
 
-      if (hasNewPages && this.currentPagePath) {
+      // 兜底 B：textLayer 被重建（缩放 / 离屏重渲染）会连带毁掉画好的高亮
+      // span（data-ann-id），而此前只认「新增 .page」—— 原地重建不触发恢复，
+      // 高亮就永远没了。检测「带 data-ann-id 的元素被移除」补一条触发。
+      // 只看元素节点：恢复自身的 wrapAndStyle 只新增/切分文本节点，不会自触发；
+      // 删除标注流程本就走 epoch 失效，多跑的一轮恢复幂等无害。
+      const lostHighlights = mutations.some(m =>
+        m.type === 'childList' &&
+        Array.from(m.removedNodes).some(node =>
+          node.nodeType === Node.ELEMENT_NODE &&
+          ((node as HTMLElement).hasAttribute?.('data-ann-id') ||
+            !!(node as HTMLElement).querySelector?.('[data-ann-id]'))
+        )
+      );
+
+      if ((hasNewPages || lostHighlights) && this.currentPagePath) {
         this.scheduleRestore(this.currentPagePath);
       }
     });
@@ -523,7 +573,32 @@ export class PDFPatcher {
     const data = await this.plugin.store.load(filePath);
     // 数据加载期间发生了删除（或文件切换）：本次持有的 data 已过期，立即中止
     if (epoch !== this.restoreEpoch) return;
-    if (!data.annotations || data.annotations.length === 0) return;
+    // 删除墓碑过滤：store 里不该再出现的已删标注（在途写入回写 / 同步拉回旧版）
+    // 一律跳过并写回净化后的数据 —— 没有这层，删除后「过不久又复活」无从根除
+    const resurrected = data.annotations.filter((a) => this.deletedAnnIds.has(a.id));
+    if (resurrected.length > 0) {
+      console.warn(
+        `[FleurPDF] restore: ${resurrected.length} 条已删除标注重新出现在存储中（疑似在途写入回写或同步拉回旧版），已跳过并写回净化数据`,
+        resurrected.map((a) => a.id),
+      );
+      data.annotations = data.annotations.filter((a) => !this.deletedAnnIds.has(a.id));
+      void this.plugin.store.save(data).catch(() => {});
+    }
+    if (!data.annotations || data.annotations.length === 0) {
+      // 兜底 A：读到 0 条但会话内已知非空 → 疑似 sidecar 同步时序/读取失败。
+      // 留痕并延迟 2s 复查一轮（一次性，不循环）；复查仍为 0 则按真实空对待，
+      // 不再怀疑（用户清空批注也走这条路径，多跑的一轮幂等无害）。
+      const known = this.lastKnownAnnCount.get(filePath) ?? 0;
+      if (known > 0) {
+        console.warn(`[FleurPDF] restore: ${filePath} 读到 0 条标注，但会话内已知 ${known} 条 —— 2s 后复查（疑似 sidecar 读取时序）`);
+        this.lastKnownAnnCount.set(filePath, 0);
+        window.setTimeout(() => {
+          if (this.currentPagePath === filePath) void this.restoreAnnotationsForFile(filePath, 0);
+        }, 2000);
+      }
+      return;
+    }
+    this.lastKnownAnnCount.set(filePath, data.annotations.length);
 
     const MAX_ATTEMPTS = 6;
     let restored = 0;
@@ -1123,17 +1198,17 @@ export class PDFPatcher {
     // 拖拽把手：菜单默认在屏幕底部弹出（1.7.11 起），可能仍需要临时避让 —— 用户可拖走。
     // 只认把手，按钮区交互不受影响（与手写笔盒的把手语义一致）。
     // ⚠️ 仅移动端创建：桌面端面板 DOM 与 1.5.15 保持一致。
-    if (isMobileBody()) {
+    if (isRealMobile()) {
       const grip = panel.createDiv('fleur-context-grip');
       setIcon(grip, 'grip-vertical');
       grip.setAttribute('aria-label', '拖动菜单');
       this.attachPanelDrag(panel, grip);
     }
 
-    // 复制。⚠️ 桌面原始形态（isMobileBody 为假）保持在首位，DOM 与 1.5.15 一致；
+    // 复制。⚠️ 桌面（含开启「桌面端手写批注」）保持在首位，DOM 与 1.5.15 一致；
     // 移动端形态（含桌面「手写批注」模式）把复制挪到第二行行首 —— 上四（三色点+直线）
     // 下四（复制/批注/询问AI/译）对称，见下方第二个创建点。
-    if (!isMobileBody()) {
+    if (!isRealMobile()) {
       const copyBtn = panel.createEl('button');
       copyBtn.addClass('fleur-context-item');
       copyBtn.title = '复制';
@@ -1152,7 +1227,7 @@ export class PDFPatcher {
       const hlBtn = hlGroup.createEl('button');
       hlBtn.addClass('fleur-context-item', 'fleur-context-hl');
       hlBtn.title = `高亮 ${idx + 1}`;
-      if (isMobileBody()) {
+      if (isRealMobile()) {
         // 移动端用 SVG 圆点，而不是「div + 行内背景色」。
         //
         // 这是踩过两次的同一道坎：移动端 WebView 下，div 的尺寸与背景最终都由样式表
@@ -1201,7 +1276,7 @@ export class PDFPatcher {
     // 划线 - 波浪：桌面端保留 1.5.15 的波浪线（text-decoration 在桌面渲染正常）。
     // 移动端不提供入口 —— Android WebView 的 wavy 装饰在小字 + 缩放下退化成点。
     // 历史数据里的 wavy 在移动端由 CSS 覆盖为直线渲染（见 styles.css）。
-    if (!isMobileBody()) {
+    if (!isRealMobile()) {
       const wavyUlBtn = panel.createEl('button');
       wavyUlBtn.addClass('fleur-context-item');
       wavyUlBtn.title = '波浪';
@@ -1213,10 +1288,10 @@ export class PDFPatcher {
     }
 
     // 分隔（仅桌面原始形态；移动端形态此处换成强制换行 + 行首复制）
-    if (!isMobileBody()) panel.createDiv({ cls: 'fleur-context-sep' });
+    if (!isRealMobile()) panel.createDiv({ cls: 'fleur-context-sep' });
 
     // ── 移动端形态：第二行行首放「复制」（上四下四的对称布局）──
-    if (isMobileBody()) {
+    if (isRealMobile()) {
       // 强制换行：flex-basis 100% 的隐形分隔，行一是三个色点 + 直线
       panel.createDiv({ cls: 'fleur-context-rowbreak' });
       const copyBtn = panel.createEl('button');
@@ -1332,7 +1407,7 @@ export class PDFPatcher {
     let posX = _x;
     let posY = _y;
 
-    if (autoKey !== '' && isMobileBody()) {
+    if (autoKey !== '' && isRealMobile()) {
       // 1.7.11：选区自动唤起的菜单默认**屏幕底部居中**。旧逻辑贴着选区下缘弹
       // （rect.bottom+44 再夹视口），选区一落到屏幕下半部分，面板就被夹回来
       // 压住正文和选择滑杆 —— 真机反馈「就近弹出干扰选中文本」。底部居中是
@@ -1501,6 +1576,8 @@ export class PDFPatcher {
     const target = ann ?? data.annotations.find((a) => a.id === annId);
     data.annotations = data.annotations.filter((a) => a.id !== annId);
     await this.plugin.store.save(data);
+    // 保存成功后记墓碑：此后 restore 一旦再见到该 id（回写/同步拉回），跳过并自愈
+    this.recordDeletedAnnIds([annId]);
     this.clearAnnotationDom(annId, target);
     this.pruneFlashSpans();
     this.removeCommentBubble(annId);
@@ -1509,6 +1586,8 @@ export class PDFPatcher {
     if (target) {
       const keepIds = new Set(data.annotations.map((a) => a.id));
       this.sweepBubblesForPage(target.page, keepIds);
+      // 全文档再扫一遍：锚点页 ≠ 标注页的漏网气泡（跨页/恢复锚错页）也清掉
+      this.sweepOrphanBubbles(keepIds);
     }
     new Notice('已清除', 2000);
     void this.plugin.getSidebar()?.refresh(file.path);
@@ -1519,6 +1598,24 @@ export class PDFPatcher {
     const pageEl = this.findPageByNumber(pageNum);
     if (!pageEl) return;
     pageEl.querySelectorAll('.fleur-comment-bubble').forEach((el) => {
+      const bubble = el as HTMLElement;
+      const id = bubble.dataset?.['annId'];
+      if (!id || !keepIds.has(id)) {
+        bubble.remove();
+        const idx = this.commentBubbles.findIndex((b) => b.el === bubble);
+        if (idx >= 0) this.commentBubbles.splice(idx, 1);
+      }
+    });
+  }
+
+  /**
+   * 全文档清扫孤儿气泡：id 不在保留集合（或缺 id）的气泡一律移除。
+   * sweepBubblesForPage 只扫标注所在页，覆盖不到「气泡锚点页 ≠ 标注页」
+   * （跨页标注、恢复时锚到别的页）等异常 —— 删除后用户看到的「气泡还在」
+   * 就是这类漏网。恢复流程现在必给气泡带 id，缺 id 的都是孤儿，可安全清。
+   */
+  sweepOrphanBubbles(keepIds: Set<string>) {
+    document.querySelectorAll('.fleur-comment-bubble').forEach((el) => {
       const bubble = el as HTMLElement;
       const id = bubble.dataset?.['annId'];
       if (!id || !keepIds.has(id)) {
@@ -1816,6 +1913,18 @@ export class PDFPatcher {
   private addCommentBubble(
     comment: string, anchorSpan: HTMLElement, pageEl: HTMLElement, annId?: string
   ) {
+    // 幂等守卫：恢复流程随页签切换 / 滚动 / 容器尺寸变化反复重跑，无守卫时
+    // 每轮都会在同一位置再追加一个气泡 —— 半透明弹层与阴影逐层叠加、
+    // 同一区域反复重建造成闪烁。同 id 且仍在 DOM 的直接跳过；
+    // 已脱离 DOM 的死引用顺手清出数组，允许重建。
+    if (annId) {
+      for (let i = this.commentBubbles.length - 1; i >= 0; i--) {
+        if (this.commentBubbles[i].el.dataset?.['annId'] !== annId) continue;
+        if (this.commentBubbles[i].el.isConnected) return;
+        this.commentBubbles.splice(i, 1);
+      }
+    }
+
     if (getComputedStyle(pageEl).position === 'static') {
       pageEl.addClass('fleur-page-relative');
     }
@@ -1836,13 +1945,15 @@ export class PDFPatcher {
     const icon = wrapper.createDiv();
     icon.addClass('fleur-comment-bubble-icon');
 
+    // 图标造型对齐 fleur-annotation 的批注气泡：裸 message-square SVG + currentColor，
+    // 无底色圆点；半透明与悬停变实由 .fleur-comment-bubble-icon 控制
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('width', '11');
-    svg.setAttribute('height', '11');
+    svg.setAttribute('width', '14');
+    svg.setAttribute('height', '14');
     svg.setAttribute('viewBox', '0 0 24 24');
     svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', '#fff');
-    svg.setAttribute('stroke-width', '2.5');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
     svg.setAttribute('stroke-linecap', 'round');
     svg.setAttribute('stroke-linejoin', 'round');
     const pathEl = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -1858,7 +1969,13 @@ export class PDFPatcher {
 
     const textEl = popup.createDiv();
     const plainText = markdownToPlain(normalizeWhitespace(comment));
-    textEl.textContent = plainText;
+    // 首行避让右上角操作钮：浮动占位块只占一行高度，第二行起恢复全宽；
+    // 无操作钮的历史气泡（无 annId）不需要让位
+    if (annId) {
+      const spacer = textEl.createDiv();
+      spacer.addClass('fleur-comment-bubble-spacer');
+    }
+    textEl.appendChild(document.createTextNode(plainText));
 
     // 长批注默认折叠（>80 字符）
     if (plainText.length > 80) {
@@ -1876,6 +1993,42 @@ export class PDFPatcher {
       });
     }
 
+    // 操作行（编辑 / 删除）：仅带 id 的气泡提供 —— 数据层按 id 定位。
+    // 历史无 id 气泡无法定位标注，不显示入口（只能走侧边栏管理）。
+    if (annId) {
+      const actions = popup.createDiv();
+      actions.addClass('fleur-comment-bubble-actions');
+
+      const editBtn = actions.createEl('button');
+      editBtn.addClass('fleur-comment-bubble-action');
+      editBtn.title = '编辑批注';
+      setIcon(editBtn, 'pencil');
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.closeOpenBubble();
+        void this.editCommentDialog(annId);
+      });
+
+      const delBtn = actions.createEl('button');
+      delBtn.addClass('fleur-comment-bubble-action');
+      delBtn.addClass('is-danger');
+      delBtn.title = '删除批注';
+      setIcon(delBtn, 'trash-2');
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.closeOpenBubble();
+        void this.removeAnnotationFromPdf(annId);
+      });
+    }
+
+    // 点按图标开合弹层：真机移动端没有 hover，这是触摸屏上查看批注的唯一入口。
+    // 桌面端不写 is-open —— 桌面弹层纯 hover 驱动；写进去一旦「点外部收起」
+    // 监听因重建/换页失效就会卡在常开态，编辑/删除钮跟着常显（1.8.x 实测）。
+    icon.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (Platform.isMobile) this.toggleBubbleOpen(wrapper);
+    });
+
     wrapper.appendChild(icon);
     wrapper.appendChild(popup);
 
@@ -1883,11 +2036,27 @@ export class PDFPatcher {
       e.preventDefault();
       e.stopPropagation();
       const menu = new Menu();
-      menu.addItem((item) => {
-        item.setTitle('删除批注');
-        item.setIcon('trash-2');
-        item.onClick(() => this.removeComment(comment, wrapper));
-      });
+      if (annId) {
+        menu.addItem((item) => {
+          item.setTitle('编辑批注');
+          item.setIcon('pencil');
+          item.onClick(() => void this.editCommentDialog(annId));
+        });
+        menu.addItem((item) => {
+          item.setTitle('删除批注');
+          item.setIcon('trash-2');
+          // 按 id 走统一删除（数据 + 高亮 span + 气泡 + 侧边栏一条龙），
+          // 不再用旧的按评论文本匹配（会误删所有同文批注且不清理高亮）
+          item.onClick(() => void this.removeAnnotationFromPdf(annId));
+        });
+      } else {
+        // 历史无 id 气泡兜底：只能按评论文本匹配删除（可能误删同文批注）
+        menu.addItem((item) => {
+          item.setTitle('删除批注');
+          item.setIcon('trash-2');
+          item.onClick(() => void this.removeComment(comment, wrapper));
+        });
+      }
       menu.showAtPosition({ x: e.clientX, y: e.clientY });
     });
 
@@ -1895,12 +2064,124 @@ export class PDFPatcher {
     this.commentBubbles.push({ el: wrapper });
   }
 
+  /** 当前点开的气泡（is-open），以及它的「点外部收起」监听。同一时间至多一个。 */
+  private openBubble: HTMLElement | null = null;
+  private bubbleOutsideCloser: ((e: Event) => void) | null = null;
+
+  /** 收起当前点开的气泡（摘掉点外部监听 + 去掉 is-open） */
+  private closeOpenBubble(): void {
+    if (this.bubbleOutsideCloser) {
+      document.removeEventListener('pointerdown', this.bubbleOutsideCloser, true);
+      this.bubbleOutsideCloser = null;
+    }
+    this.openBubble?.removeClass('is-open');
+    this.openBubble = null;
+  }
+
+  /** 点按气泡图标开合弹层（与批注面板同款：pointerdown capture 点外部收起） */
+  private toggleBubbleOpen(wrapper: HTMLElement): void {
+    if (this.openBubble === wrapper) {
+      this.closeOpenBubble();
+      return;
+    }
+    this.closeOpenBubble();
+    this.openBubble = wrapper;
+    wrapper.addClass('is-open');
+    const closer = (e: Event) => {
+      if (wrapper.contains(e.target as Node)) return;
+      this.closeOpenBubble();
+    };
+    this.bubbleOutsideCloser = closer;
+    // 异步挂监听：本次 click 事件流里不再收一次（与 showContextMenu 同款处理）
+    window.setTimeout(() => {
+      if (this.openBubble === wrapper) document.addEventListener('pointerdown', closer, true);
+    }, 0);
+  }
+
+  /**
+   * 编辑批注弹窗（气泡操作行 / 右键菜单共用）。
+   * 保存按 id 更新 store，气泡原位重建（移除旧气泡 → 用首个高亮 span 重画），
+   * 侧边栏同步刷新。原文引用取自批注数据本身，不依赖 DOM 存活。
+   */
+  private async editCommentDialog(annId: string): Promise<void> {
+    const file = this.plugin.app.workspace.getActiveFile();
+    if (!file) { new Notice('未找到当前文件'); return; }
+    const data = await this.plugin.store.load(file.path);
+    const ann = data.annotations.find((a) => a.id === annId);
+    if (!ann) { new Notice('未找到该批注'); return; }
+
+    const modal = new Modal(this.plugin.app);
+    modal.titleEl.hide();
+    const root = modal.contentEl.createDiv();
+    root.addClass('fleur-comment-dialog-root');
+
+    const quoteBlock = root.createDiv();
+    quoteBlock.addClass('fleur-comment-dialog-quote');
+    const quoteBar = quoteBlock.createDiv();
+    quoteBar.addClass('fleur-comment-dialog-quote-bar');
+    quoteBar.setCssProps({ '--fleur-hl-color': ann.color || '#D4A017' });
+    const quoteText = quoteBlock.createDiv();
+    quoteText.addClass('fleur-comment-dialog-quote-text');
+    quoteText.textContent = ann.text;
+
+    const inputLabel = root.createDiv();
+    inputLabel.addClass('fleur-comment-dialog-label');
+    inputLabel.textContent = '注释';
+
+    const textarea = root.createEl('textarea');
+    textarea.addClass('fleur-comment-dialog-textarea');
+    textarea.value = ann.comment ?? '';
+
+    const btnRow = root.createDiv();
+    btnRow.addClass('fleur-comment-dialog-btn-row');
+    const cancelBtn = btnRow.createEl('button', { text: '取消' });
+    cancelBtn.addClass('fleur-comment-dialog-btn', 'cancel');
+    cancelBtn.addEventListener('click', () => modal.close());
+    const saveBtn = btnRow.createEl('button', { text: '保存' });
+    saveBtn.addClass('fleur-comment-dialog-btn', 'save');
+
+    const doSave = async () => {
+      const next = textarea.value.trim();
+      if (!next) { new Notice('批注内容不能为空'); return; }
+      modal.close();
+      // 重新加载再改：编辑期间标注可能被侧边栏/其他端改动，不能拿旧 data 直接回写
+      const fresh = await this.plugin.store.load(file.path);
+      const target = fresh.annotations.find((a) => a.id === annId);
+      if (!target) { new Notice('批注已被删除'); return; }
+      target.comment = next;
+      await this.plugin.store.save(fresh);
+      // 等一拍避开 focus/DOM 时序（与新建批注后补画气泡同款处理）
+      await new Promise((r) => window.setTimeout(r, 80));
+      this.removeCommentBubble(annId);
+      const anchor = document.querySelector(`[data-ann-id="${annId}"]`) as HTMLElement | null;
+      const pageEl = anchor?.closest<HTMLElement>('.page') ?? null;
+      if (anchor && pageEl) {
+        this.addCommentBubble(next, anchor, pageEl, annId);
+      }
+      void this.plugin.getSidebar()?.refresh(file.path);
+      new Notice('批注已更新', 2000);
+    };
+    saveBtn.addEventListener('click', () => { void doSave(); });
+    textarea.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        void doSave();
+      }
+      if (e.key === 'Escape') modal.close();
+    });
+
+    modal.open();
+    window.setTimeout(() => textarea.focus(), 100);
+  }
+
   private async removeComment(comment: string, bubble: HTMLElement) {
     const file = this.plugin.app.workspace.getActiveFile();
     if (file) {
       const data = await this.plugin.store.load(file.path);
+      const removedIds = data.annotations.filter(a => a.comment === comment).map(a => a.id);
       data.annotations = data.annotations.filter(a => a.comment !== comment);
       await this.plugin.store.save(data);
+      this.recordDeletedAnnIds(removedIds);
       void this.plugin.getSidebar()?.refresh(file.path);
     }
     bubble.remove();
@@ -2179,6 +2460,34 @@ export class PDFPatcher {
       if (pIdx !== -1) {
         const endPos = Math.min(pIdx + nfkcTarget.length, nfkcFull.length);
         return this._textRangeToSegments(map, pIdx, endPos);
+      }
+    }
+
+    // 策略6: 去标点匹配（跨设备失配的最后防线，兜底机制）。
+    // 内部标点差异（智能引号 / 连字符断词 / 全半角）是跨设备恢复失败的最大来源，
+    // 而策略 1–5 只去首尾标点、保留内部标点。把双方都做 NFKC + 去标点/符号/空白
+    // 后再匹配。防误画：目标去标点后须 ≥8 字符，且**页内唯一命中**才画 ——
+    // 命中多处一律放弃（宁可不画也不画错位置）。
+    if (nfkcFull.length === fullText.length) {
+      const skippable = /[\p{P}\p{S}\s]/u;
+      const idxMap: number[] = [];
+      let stripped = '';
+      for (let i = 0; i < nfkcFull.length; i++) {
+        if (skippable.test(nfkcFull[i])) continue;
+        stripped += nfkcFull[i];
+        idxMap.push(i);
+      }
+      let targetStripped = '';
+      for (const ch of nfkcTarget) {
+        if (!skippable.test(ch)) targetStripped += ch;
+      }
+      if (targetStripped.length >= 8) {
+        const sIdx = stripped.indexOf(targetStripped);
+        if (sIdx !== -1 && stripped.indexOf(targetStripped, sIdx + 1) === -1) {
+          const oStart = idxMap[sIdx];
+          const oEnd = idxMap[sIdx + targetStripped.length - 1] + 1;
+          return this._textRangeToSegments(map, oStart, oEnd);
+        }
       }
     }
 

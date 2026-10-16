@@ -140,6 +140,7 @@ export default class FleurPDFPlugin extends Plugin {
 
   async onload() {
     await this.loadSettings();
+    this.applyBubbleVisibility();
 
     // 独立生词本跨设备同步（开关关闭时内部全部跳过，桌面/移动零影响）
     this.wordbookSync.init();
@@ -281,10 +282,13 @@ export default class FleurPDFPlugin extends Plugin {
       })
     );
 
-    // 打开 PDF 时激活侧边栏
+    // 打开 PDF 时激活侧边栏（受「默认打开侧边栏」开关控制）。
+    // ⚠️ 该设置此前从未被消费（只在设置页读写），自动弹出实际无条件执行，
+    // 关闭了照样弹 —— 死设置，现按设置项描述接线。
+    // 关闭后仍可用 ribbon 图标 / 命令手动打开；已开着时下面的 refresh 照常工作。
     this.registerEvent(
       this.app.workspace.on('file-open', (file) => {
-        if (file?.extension === 'pdf') {
+        if (file?.extension === 'pdf' && this.settings.sidebarDefaultOpen) {
           void this.activateSidebar();
         }
       })
@@ -460,6 +464,16 @@ export default class FleurPDFPlugin extends Plugin {
         this.secretBackend,
       ),
     );
+  }
+
+  /**
+   * 批注气泡显隐（设置 → 标注设置「PDF 页内显示批注气泡」）。
+   * body 级 CSS 开关：命中 .fleur-comment-bubble 直接 display:none，
+   * 恢复流程照常创建/跳过气泡节点，开回来自动复现，无需重走恢复。
+   * 桌面端与移动端共用同一个类。
+   */
+  applyBubbleVisibility(): void {
+    document.body.toggleClass('fleur-pdf-hide-bubbles', this.settings.showCommentBubbles === false);
   }
 
   /**
