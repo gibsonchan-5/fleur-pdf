@@ -695,8 +695,10 @@ export class InkOverlayEngine {
 
 	/**
 	 * 可见视口在根内容空间里的范围（直尺「开」时的落点基准）。
-	 * 内容空间里视口顶的 y = scrollTop − (滚动容器顶 − 根顶)：滚过了多少，
-	 * 视口顶就在内容里多深。找不到滚动容器时退化为整根可见盒。
+	 * getBoundingClientRect 的差值**已经含滚动量**：滚动容器客户盒与根盒相交，
+	 * 交线换算到根坐标就是可见区。⚠️ 不能再叠 scrollTop —— 那会把滚动扣两遍，
+	 * 结果恒 ≈0，尺被钉在文档顶（页滚得越深越看不见，真机症状正是如此）。
+	 * 找不到滚动容器时退化为整根可见盒。
 	 */
 	private visibleViewportInRoot(): {
 		left: number;
@@ -707,15 +709,19 @@ export class InkOverlayEngine {
 		const root: HTMLElement | undefined = this.viewer?.viewer;
 		if (!root) return null;
 		const rootRect = root.getBoundingClientRect();
+		if (rootRect.width <= 0 || rootRect.height <= 0) return null;
 		const scroller = this.findScrollable(root);
-		if (!scroller) return { left: 0, top: 0, width: rootRect.width, height: rootRect.height };
-		const r = scroller.getBoundingClientRect();
-		return {
-			left: scroller.scrollLeft - (r.left - rootRect.left),
-			top: scroller.scrollTop - (r.top - rootRect.top),
-			width: r.width,
-			height: r.height,
-		};
+		const win = root.ownerDocument?.defaultView ?? window;
+		const vb = scroller
+			? scroller.getBoundingClientRect()
+			: { top: 0, left: 0, bottom: win.innerHeight, right: win.innerWidth };
+		const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+		const top = clamp(vb.top - rootRect.top, 0, rootRect.height);
+		const left = clamp(vb.left - rootRect.left, 0, rootRect.width);
+		const bottom = clamp(vb.bottom - rootRect.top, 0, rootRect.height);
+		const right = clamp(vb.right - rootRect.left, 0, rootRect.width);
+		if (right - left <= 0 || bottom - top <= 0) return null;
+		return { left, top, width: right - left, height: bottom - top };
 	}
 
 	private mountRuler(): void {
