@@ -79,4 +79,34 @@ const R = await import(pathToFileURL(outFile).href);
 }
 
 
+// ── 7. resizeRuler：拖一端、锚另一端 ──
+{
+	const base = { x: 300, y: 150, angle: 0, length: 340, width: 46 };
+	// 拖右端 +100：左端 (130,150) 锚定，长 440，中心 (350,150)
+	let r = R.resizeRuler(base, 'resize-r', 570, 150);
+	assert.ok(Math.abs(r.length - 440) < 1e-9 && Math.abs(r.x - 350) < 1e-9 && Math.abs(r.y - 150) < 1e-9, `右拖：${JSON.stringify(r)}`);
+	// 拖左端 −100：右端 (470,150) 锚定，长 440，中心 (250,150)
+	r = R.resizeRuler(base, 'resize-l', 30, 150);
+	assert.ok(Math.abs(r.length - 440) < 1e-9 && Math.abs(r.x - 250) < 1e-9, `左拖：${JSON.stringify(r)}`);
+	// 夹取：上界 900 / 下界 120，锚定端不变
+	r = R.resizeRuler(base, 'resize-r', 5000, 150);
+	assert.ok(Math.abs(r.length - R.RULER_MAX_LENGTH) < 1e-9 && Math.abs(r.x - (130 + 450)) < 1e-9, '上界夹取');
+	r = R.resizeRuler(base, 'resize-r', 200, 150);
+	assert.ok(Math.abs(r.length - R.RULER_MIN_LENGTH) < 1e-9 && Math.abs(r.x - (130 + 60)) < 1e-9, '下界夹取');
+	// 旋转 90° 后沿 y 轴拖：d=(0,1)，左端 (300,-20) 锚定
+	r = R.resizeRuler({ ...base, angle: Math.PI / 2 }, 'resize-r', 300, 420);
+	assert.ok(Math.abs(r.length - 440) < 1e-9 && Math.abs(r.x - 300) < 1e-9 && Math.abs(r.y - 200) < 1e-9, `竖尺右拖：${JSON.stringify(r)}`);
+	// 指针垂直分量被忽略：横着偏 200px 结果不变
+	const off = R.resizeRuler({ ...base, angle: Math.PI / 2 }, 'resize-r', 500, 420);
+	assert.ok(Math.abs(off.length - r.length) < 1e-9 && Math.abs(off.x - r.x) < 1e-9 && Math.abs(off.y - r.y) < 1e-9, '垂直分量忽略');
+	// 锚定端逐帧不漂移：连拖三步，左端始终 (130,150)
+	let cur = base;
+	for (const px of [400, 500, 450]) {
+		cur = R.resizeRuler(cur, 'resize-r', px, 150);
+		const lx = cur.x - Math.cos(cur.angle) * cur.length / 2;
+		const ly = cur.y - Math.sin(cur.angle) * cur.length / 2;
+		assert.ok(Math.abs(lx - 130) < 1e-9 && Math.abs(ly - 150) < 1e-9, `连拖锚定：${lx},${ly}`);
+	}
+}
+
 console.log('✔ 直尺几何纯函数测试全部通过');

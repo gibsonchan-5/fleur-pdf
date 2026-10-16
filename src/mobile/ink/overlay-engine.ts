@@ -54,10 +54,12 @@ import {
 	nearEdge,
 	pageCssToRoot,
 	projectToEdge,
+	resizeRuler,
 	rootToPageCss,
 	RULER_DEFAULT_LENGTH,
 	RULER_DEFAULT_WIDTH,
 	rulerEdgeLine,
+	type RulerResizeMode,
 	type RulerState,
 } from './ruler';
 
@@ -429,10 +431,12 @@ export class InkOverlayEngine {
 	/** 直尺 DOM（挂在 viewer 根元素上，随内容滚动）。 */
 	private rulerEl: HTMLElement | null = null;
 	/** 正在进行的直尺拖动/旋转。 */
-	private rulerDrag: { mode: 'move' | 'rotate'; pointerId: number; lastX: number; lastY: number } | null =
+	private rulerDrag: { mode: 'move' | 'rotate' | RulerResizeMode; pointerId: number; lastX: number; lastY: number } | null =
 		null;
 	/** 直尺挂载时是否替根元素补了 position:relative（卸载时还原）。 */
 	private rulerHostFixed = false;
+	/** 刻度层重建缓存键（`${scale}|${length}`）：拖移/旋转逐帧调用也不重建 DOM。 */
+	private rulerScaleKey = '';
 	private rulerHostPrevPos = '';
 
 	constructor(app: App) {
@@ -742,11 +746,16 @@ export class InkOverlayEngine {
 		if (!this.rulerEl || !this.rulerEl.isConnected) {
 			const el = document.createElement('div');
 			el.addClass('fleur-ink-ruler');
-			el.createDiv('fleur-ink-ruler-body');
+			// 刻度层（渐变刻度 + 厘米数字）→ 功能边线 → 两端长短拖拽区 → 旋转钮。
+			// 尺身本体即根元素（半透明磨砂），不再单挂 -body。
+			el.createDiv('fleur-ink-ruler-scale');
 			el.createDiv('fleur-ink-ruler-edge');
+			el.createDiv('fleur-ink-ruler-end-l');
+			el.createDiv('fleur-ink-ruler-end-r');
 			el.createDiv('fleur-ink-ruler-handle');
 			root.appendChild(el);
 			this.rulerEl = el;
+			this.rulerScaleKey = '';
 		}
 		this.applyRulerTransform();
 	}
@@ -754,6 +763,7 @@ export class InkOverlayEngine {
 	private unmountRuler(): void {
 		this.rulerEl?.remove();
 		this.rulerEl = null;
+		this.rulerScaleKey = '';
 		if (this.rulerHostFixed) {
 			const root: HTMLElement | undefined = this.viewer?.viewer;
 			if (root) root.style.position = this.rulerHostPrevPos;
@@ -775,6 +785,60 @@ export class InkOverlayEngine {
 			marginTop: `${-r.width / 2}px`,
 			transform: `rotate(${r.angle}rad)`,
 		});
+		this.renderRulerScale();
+	}
+
+	/** 当前缩放（css px / pdf pt）：任取一个已渲染页的 viewport；都没有时退化为 1。 */
+	private currentScale(): number {
+		for (const page of this.surfaces.keys()) {
+			const s = this.viewportFor(page)?.scale;
+			if (typeof s === 'number' && s > 0) return s;
+		}
+		return 1;
+	}
+
+	/**
+	 * 刻度层渲染（Apple Notes 式厘米刻度）：三层 repeating 渐变（毫米/半厘米/厘米）
+	 * 挂在上缘向下延伸 + 每厘米一个数字 span。间距 = 28.3465pt/cm × 缩放。
+	 * 缓存键 `${scale}|${length}`：拖移/旋转逐帧调用不重建；缩放或长短变化才重画。
+	 * 毫米刻度间距 < 4.5px 时省略（低缩放下密成噪声）。
+	 */
+	private renderRulerScale(): void {
+		const r = this.ruler;
+		const el = this.rulerEl;
+		if (!r || !el) return;
+		const scaleEl = el.querySelector?.('.fleur-ink-ruler-scale') as HTMLElement | null;
+		if (!scaleEl) return;
+		const scale = this.currentScale();
+		const key = `${scale}|${Math.round(r.length)}`;
+		if (key === this.rulerScaleKey) return;
+		this.rulerScaleKey = key;
+		const cm = 28.3465 * scale;
+		const mm = cm / 10;
+		const tick = 'color-mix(in srgb, var(--text-normal) 55%, transparent)';
+		const tickSoft = 'color-mix(in srgb, var(--text-normal) 35%, transparent)';
+		const layers: string[] = [];
+		const sizes: string[] = [];
+		if (mm >= 4.5) {
+			layers.push(`linear-gradient(90deg, ${tickSoft} 0 1px, transparent 1px)`);
+			sizes.push(`${mm}px 5px`);
+		}
+		layers.push(`linear-gradient(90deg, ${tickSoft} 0 1px, transparent 1px)`);
+		sizes.push(`${cm / 2}px 9px`);
+		layers.push(`linear-gradient(90deg, ${tick} 0 1px, transparent 1px)`);
+		sizes.push(`${cm}px 13px`);
+		scaleEl.style.backgroundImage = layers.join(', ');
+		scaleEl.style.backgroundSize = sizes.join(', ');
+		scaleEl.style.backgroundRepeat = 'repeat-x';
+		scaleEl.style.backgroundPosition = '0 0';
+		scaleEl.textContent = '';
+		const n = Math.floor(r.length / cm);
+		for (let i = 0; i <= n; i++) {
+			const s = document.createElement('span');
+			s.textContent = String(i);
+			s.style.left = `${i * cm + 3}px`;
+			scaleEl.appendChild(s);
+		}
 	}
 
 	/**
@@ -785,9 +849,16 @@ export class InkOverlayEngine {
 	private handleRulerDown(e: PointerEvent): boolean {
 		const t = e.target as Element | null;
 		if (!t || !this.rulerEl || !t.closest?.('.fleur-ink-ruler')) return false;
-		const isHandle = !!t.closest?.('.fleur-ink-ruler-handle');
+		// 命中顺序：旋转钮 → 两端长短拖拽区 → 尺身平移
+		const mode: 'move' | 'rotate' | RulerResizeMode = t.closest?.('.fleur-ink-ruler-handle')
+			? 'rotate'
+			: t.closest?.('.fleur-ink-ruler-end-l')
+				? 'resize-l'
+				: t.closest?.('.fleur-ink-ruler-end-r')
+					? 'resize-r'
+					: 'move';
 		this.rulerDrag = {
-			mode: isHandle ? 'rotate' : 'move',
+			mode,
 			pointerId: e.pointerId,
 			lastX: e.clientX,
 			lastY: e.clientY,
@@ -807,10 +878,16 @@ export class InkOverlayEngine {
 			r.y += e.clientY - d.lastY;
 			d.lastX = e.clientX;
 			d.lastY = e.clientY;
-		} else {
+		} else if (d.mode === 'rotate') {
 			// 旋转：把手绕尺心，拖到哪个方向就是哪个角度
 			const rr = this.rootRect();
 			if (rr) r.angle = Math.atan2(e.clientY - (r.y + rr.top), e.clientX - (r.x + rr.left));
+		} else {
+			// 长短：拖哪端锚另一端（resizeRuler 内夹取），指针换算到根坐标
+			const rr = this.rootRect();
+			if (rr) {
+				this.ruler = resizeRuler(r, d.mode, e.clientX - rr.left, e.clientY - rr.top);
+			}
 		}
 		this.applyRulerTransform();
 	}
@@ -1087,6 +1164,8 @@ export class InkOverlayEngine {
 		sf.cctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		sf.dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 		this.paintPage(sf);
+		// 缩放变了 → 厘米刻度的 px 间距跟着变（缓存键含 scale，未变则 no-op）
+		this.renderRulerScale();
 	}
 
 	/* ------------------------------ 坐标与视口 ------------------------------ */

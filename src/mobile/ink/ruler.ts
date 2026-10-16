@@ -87,3 +87,46 @@ export function rootToPageCss(
 ): { x: number; y: number } {
 	return { x: p.x - pageRect.left + rootRect.left, y: p.y - pageRect.top + rootRect.top };
 }
+
+/** 尺长夹取范围（CSS px）：太短没法划线，太长超出常见视口宽。 */
+export const RULER_MIN_LENGTH = 120;
+export const RULER_MAX_LENGTH = 900;
+
+/** 长短拖拽模式：拖哪一端，另一端锚定不动。 */
+export type RulerResizeMode = 'resize-l' | 'resize-r';
+
+/**
+ * 调尺长（拖两端、锚定另一端）。px/py 为指针的 viewer 根坐标。
+ * 新长 = 指针在尺方向 d 上相对锚定端的投影距离，夹在 [MIN, MAX]；
+ * 中心移到「锚定端 + d × 新长/2」，保证锚定端逐帧不漂移。
+ * 指针垂直于尺的分量被投影自然忽略（斜着拖也只认沿尺方向的分量）。
+ */
+export function resizeRuler(r: RulerState, mode: RulerResizeMode, px: number, py: number): RulerState {
+	const dx = Math.cos(r.angle);
+	const dy = Math.sin(r.angle);
+	const half = r.length / 2;
+	const lx = r.x - dx * half;
+	const ly = r.y - dy * half;
+	const rx = r.x + dx * half;
+	const ry = r.y + dy * half;
+	let len: number;
+	let ax: number;
+	let ay: number;
+	if (mode === 'resize-r') {
+		len = (px - lx) * dx + (py - ly) * dy;
+		ax = lx;
+		ay = ly;
+	} else {
+		len = (rx - px) * dx + (ry - py) * dy;
+		ax = rx;
+		ay = ry;
+	}
+	len = Math.min(Math.max(len, RULER_MIN_LENGTH), RULER_MAX_LENGTH);
+	const nh = len / 2;
+	return {
+		...r,
+		length: len,
+		x: mode === 'resize-r' ? ax + dx * nh : ax - dx * nh,
+		y: mode === 'resize-r' ? ay + dy * nh : ay - dy * nh,
+	};
+}
