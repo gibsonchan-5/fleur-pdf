@@ -1781,6 +1781,7 @@ export class PDFPatcher {
       comment,
       underlineStyle,
       createdAt: Date.now(),
+      updatedAt: Date.now(),
       pos,
     };
 
@@ -1846,6 +1847,7 @@ export class PDFPatcher {
         color: hlColor,
         comment,
         createdAt: Date.now(),
+        updatedAt: Date.now(),
         pos: computeSelectionPos(pages),
       };
       await this.plugin.store.addAnnotation(path, annotation);
@@ -2149,6 +2151,8 @@ export class PDFPatcher {
       const target = fresh.annotations.find((a) => a.id === annId);
       if (!target) { new Notice('批注已被删除'); return; }
       target.comment = next;
+      // 记录修改时刻：跨设备同步时编辑冲突按此时间后写者胜
+      target.updatedAt = Date.now();
       await this.plugin.store.save(fresh);
       // 等一拍避开 focus/DOM 时序（与新建批注后补画气泡同款处理）
       await new Promise((r) => window.setTimeout(r, 80));
