@@ -117,6 +117,11 @@ export class InkUI {
 	/** 局部截图模式（相机按钮）：开启后引擎工具切到 snap，完成后自动退出。 */
 	private snapMode = false;
 	/**
+	 * 直尺开合（会话内存：不进设置、退出 Obsidian 即忘，与 Apple Notes 一致）。
+	 * 位置与角度的记忆在引擎（ruler 状态跨 attach/detach 存活），这里只记开合。
+	 */
+	private rulerOn = false;
+	/**
 	 * 本端删除墓碑（笔迹 id → 删除时刻 ms），随每次落盘写回 sidecar。
 	 * 跨设备同步开启时用于「删过就别复活」；撤销恢复 / 重加同 id 笔迹时撤销墓碑。
 	 */
@@ -358,6 +363,8 @@ export class InkUI {
 		this.overlay.attach(handle.viewer);
 		this.applyInkTuning();
 		this.overlay.setTool(this.currentTool());
+		// 会话内开过直尺 → 恢复（位姿沿用引擎里记的上次状态）
+		if (this.rulerOn) this.overlay.setRulerVisible(true);
 		this.overlay.onChange(() => {
 			// 每次数据变化（一笔提交 / 擦除 / 移动 / 撤销）都排一次空闲落盘
 			this.scheduleAutoSave();
@@ -855,6 +862,18 @@ export class InkUI {
 			// 橡皮设置弹层（擦除模式 + 大小）常驻笔盒，由「再次点击橡皮图标」展开
 			bar.appendChild(this.buildEraserPop());
 		}
+
+		// ── 直尺：贴尺沿书写自动变直（可拖动 / 旋转，Apple Notes 式）──
+		const rulerBtn = bar.createDiv('fleur-pdf-ink-btn');
+		setIcon(rulerBtn, 'ruler');
+		rulerBtn.setAttribute('aria-label', '直尺（贴尺沿书写变直，拖尺身移动 / 拖手柄旋转）');
+		if (this.rulerOn) rulerBtn.addClass('is-active');
+		rulerBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.rulerOn = !this.rulerOn;
+			this.overlay.setRulerVisible(this.rulerOn);
+			this.refreshPenBar();
+		});
 
 		bar.createDiv('fleur-pdf-ink-sep');
 

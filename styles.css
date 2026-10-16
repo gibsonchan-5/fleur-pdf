@@ -2165,6 +2165,52 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   z-index: 4;
 }
 
+/* ===== 直尺（手写模式可选工具，Apple Notes 式）=====
+   挂在 pdf.js viewer 根上，随内容滚动。拖尺身移动、拖右端手柄旋转；
+   落点进入尺沿（上缘高亮线）感应带的笔迹由引擎实时投影到尺沿，
+   表现为「贴尺沿书写自动变直」。不贴尺的笔迹不受任何影响。
+   ============================================================ */
+.fleur-ink-ruler {
+  position: absolute;
+  z-index: 5;
+  touch-action: none;
+  border-radius: 8px;
+  background: var(--background-modifier-hover);
+  box-shadow: 0 1px 8px rgba(0, 0, 0, 0.18);
+  cursor: grab;
+}
+.fleur-ink-ruler:active {
+  cursor: grabbing;
+}
+.fleur-ink-ruler-body {
+  position: absolute;
+  inset: 3px;
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+}
+.fleur-ink-ruler-edge {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  top: -1px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--interactive-accent);
+}
+.fleur-ink-ruler-handle {
+  position: absolute;
+  right: -9px;
+  top: 50%;
+  width: 20px;
+  height: 20px;
+  margin-top: -10px;
+  border-radius: 50%;
+  background: var(--background-primary);
+  border: 2px solid var(--interactive-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22);
+  cursor: grab;
+}
+
 /* ===== Fleur ink editor styles（生成区，勿手改；源：src/mobile/ink-css.ts） ===== */
 
 /* ============================================================

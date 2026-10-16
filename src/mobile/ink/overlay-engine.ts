@@ -50,6 +50,15 @@ import {
 	type GraceMergeAction,
 	type GraceMergeTuning,
 } from './grace-merge';
+import {
+	defaultRulerState,
+	nearEdge,
+	pageCssToRoot,
+	projectToEdge,
+	rootToPageCss,
+	rulerEdgeLine,
+	type RulerState,
+} from './ruler';
 
 /* ---------------------------------------------------------------------------
  * 常量
@@ -223,6 +232,12 @@ interface ActiveGesture {
 	// scroll（手指滚动）
 	scrollLast?: { x: number; y: number };
 	scrollEl?: HTMLElement | null;
+	/**
+	 * 直尺：本手势已判「贴尺」（起点或某个采样点落进尺沿感应带）。
+	 * 一旦成立对整笔生效 —— 后续所有点实时投影到尺沿（所见即所得）；
+	 * 投影前的自由前缀保持不动（Apple Notes 同款：线从你下笔的地方开始）。
+	 */
+	rulerSnapped?: boolean;
 	/** 松手惯性用的速度（CSS px/ms，EMA 平滑；向下/向右为正）。 */
 	scrollVel?: { x: number; y: number };
 	/** 上一个 scroll move 事件的时间戳（算瞬时速度用）。 */
@@ -404,6 +419,18 @@ export class InkOverlayEngine {
 	/** 松手惯性滚动的 rAF 句柄（null = 没有惯性动画在进行）。 */
 	private momentumRaf: number | null = null;
 
+	/**
+	 * 直尺状态（viewer 根坐标，见 ruler.ts）。null = 直尺关闭。
+	 * ⚠️ detach() 不清这个字段：状态跨 attach/detach 存活（会话内记忆），
+	 * 真正的开关由 setRulerVisible 控制、退出手写模式由 InkUI 记住开合。
+	 */
+	private ruler: RulerState | null = null;
+	/** 直尺 DOM（挂在 viewer 根元素上，随内容滚动）。 */
+	private rulerEl: HTMLElement | null = null;
+	/** 正在进行的直尺拖动/旋转。 */
+	private rulerDrag: { mode: 'move' | 'rotate'; pointerId: number; lastX: number; lastY: number } | null =
+		null;
+
 	constructor(app: App) {
 		this.app = app;
 	}
@@ -468,6 +495,10 @@ export class InkOverlayEngine {
 		document.removeEventListener('pointerout', this.onPointerOut, { capture: true } as any);
 		this.pageObserver?.disconnect();
 		this.pageObserver = null;
+		// 直尺：拆 DOM、断拖动；状态（this.ruler）保留 —— 会话内重进手写模式
+		// 还回原位原角度（InkUI 记住的是开合，位置记忆在引擎）。
+		this.rulerDrag = null;
+		this.unmountRuler();
 		for (const n of Array.from(this.surfaces.keys())) this.unmountSurface(n);
 		this.surfaces.clear();
 		this.pages.clear();
@@ -610,6 +641,145 @@ export class InkOverlayEngine {
 		if (cap === this.dprCap) return;
 		this.dprCap = cap;
 		for (const sf of this.surfaces.values()) this.resizeSurface(sf);
+	}
+
+	/* ------------------------------ 直尺 ------------------------------ */
+
+	get rulerVisible(): boolean {
+		return this.ruler !== null && !!this.rulerEl?.isConnected;
+	}
+
+	/** 开关直尺。打开时沿用上次位姿（会话内记忆），第一次开则挂在视口上部居中。 */
+	setRulerVisible(visible: boolean): void {
+		if (visible) {
+			if (!this.ruler) {
+				const root: HTMLElement | undefined = this.viewer?.viewer;
+				const w = root?.clientWidth ?? 800;
+				const h = root?.clientHeight ?? 1000;
+				this.ruler = defaultRulerState(w, h);
+			}
+			this.mountRuler();
+		} else {
+			this.ruler = null;
+			this.unmountRuler();
+		}
+	}
+
+	/** viewer 根元素的包围盒（直尺坐标系与页面坐标互转的基准）。 */
+	private rootRect(): DOMRect | null {
+		const root: HTMLElement | undefined = this.viewer?.viewer;
+		return root ? root.getBoundingClientRect() : null;
+	}
+
+	private mountRuler(): void {
+		const root: HTMLElement | undefined = this.viewer?.viewer;
+		if (!root || !this.ruler) return;
+		if (!this.rulerEl || !this.rulerEl.isConnected) {
+			const el = document.createElement('div');
+			el.addClass('fleur-ink-ruler');
+			el.createDiv('fleur-ink-ruler-body');
+			el.createDiv('fleur-ink-ruler-edge');
+			el.createDiv('fleur-ink-ruler-handle');
+			root.appendChild(el);
+			this.rulerEl = el;
+		}
+		this.applyRulerTransform();
+	}
+
+	private unmountRuler(): void {
+		this.rulerEl?.remove();
+		this.rulerEl = null;
+	}
+
+	private applyRulerTransform(): void {
+		const r = this.ruler;
+		const el = this.rulerEl;
+		if (!r || !el) return;
+		el.setCssStyles?.({
+			left: `${r.x}px`,
+			top: `${r.y}px`,
+			width: `${r.length}px`,
+			height: `${r.width}px`,
+			marginLeft: `${-r.length / 2}px`,
+			marginTop: `${-r.width / 2}px`,
+			transform: `rotate(${r.angle}rad)`,
+		});
+	}
+
+	/**
+	 * 直尺上的 pointerdown（document capture 先于一切 —— 这是本功能唯一的
+	 * 输入陷阱：不在这里短路，拖尺身的笔/手指就会先被当成落墨手势）。
+	 * 返回 true 表示事件已被直尺吃掉。
+	 */
+	private handleRulerDown(e: PointerEvent): boolean {
+		const t = e.target as Element | null;
+		if (!t || !this.rulerEl || !t.closest?.('.fleur-ink-ruler')) return false;
+		const isHandle = !!t.closest?.('.fleur-ink-ruler-handle');
+		this.rulerDrag = {
+			mode: isHandle ? 'rotate' : 'move',
+			pointerId: e.pointerId,
+			lastX: e.clientX,
+			lastY: e.clientY,
+		};
+		e.preventDefault();
+		e.stopPropagation();
+		return true;
+	}
+
+	private applyRulerDrag(e: PointerEvent): void {
+		const d = this.rulerDrag;
+		const r = this.ruler;
+		if (!d || !r) return;
+		if (d.mode === 'move') {
+			// 平移：client 增量 == 根坐标增量（无缩放差），不逐帧量布局
+			r.x += e.clientX - d.lastX;
+			r.y += e.clientY - d.lastY;
+			d.lastX = e.clientX;
+			d.lastY = e.clientY;
+		} else {
+			// 旋转：把手绕尺心，拖到哪个方向就是哪个角度
+			const rr = this.rootRect();
+			if (rr) r.angle = Math.atan2(e.clientY - (r.y + rr.top), e.clientX - (r.x + rr.left));
+		}
+		this.applyRulerTransform();
+	}
+
+	/**
+	 * 贴尺判定 + 投影（ pen 手势路径专用）。
+	 *
+	 * 未贴尺：点落在尺沿感应带内 → 本手势标记贴尺，并把**这一点起**投影到尺沿。
+	 * 已贴尺：所有点投影（手在带外也沿线走 —— 直尺锁定的语义）。
+	 * 投影点出了页面边界就不落墨（v1 不做跨页长直线，越界即断）。
+	 * 返回 null = 不投影（保持原始点）。
+	 */
+	private projectForRuler(
+		g: ActiveGesture,
+		css: { x: number; y: number },
+		pageRect?: DOMRect,
+	): { css: { x: number; y: number }; pdf: { x: number; y: number } } | null {
+		const r = this.ruler;
+		if (!r) return null;
+		const rect = pageRect ?? g.surface.el.getBoundingClientRect();
+		const rootRect = this.rootRect();
+		if (!rootRect) return null;
+		const root = pageCssToRoot(css, rect, rootRect);
+		const line = rulerEdgeLine(r);
+		if (!g.rulerSnapped) {
+			if (!nearEdge(line, root.x, root.y)) return null;
+			g.rulerSnapped = true;
+		}
+		const q = projectToEdge(line, root.x, root.y);
+		const pageCss = rootToPageCss(q, rect, rootRect);
+		if (
+			pageCss.x < 0 ||
+			pageCss.y < 0 ||
+			pageCss.x > g.surface.cssW ||
+			pageCss.y > g.surface.cssH
+		)
+			return null;
+		const pdf = this.cssToPdf(g.surface, pageCss.x, pageCss.y);
+		if (!pdf) return null;
+		return { css: pageCss, pdf };
 	}
 
 	/* ------------------------------ 撤销 / 重做 ------------------------------ */
@@ -921,6 +1091,9 @@ export class InkOverlayEngine {
 	}
 
 	private onPointerDown = (e: PointerEvent): void => {
+		// 直尺优先：拖尺身 / 旋转把手的事件在这里吃掉，绝不能落进落墨手势
+		//（document capture 比尺子自身的监听先到，短路只能做在这里）。
+		if (this.rulerEl && this.handleRulerDown(e)) return;
 		if (e.pointerType === 'touch') {
 			// 手指只滚动，永不落墨（画 / 擦 / 套索是笔和鼠标的活）。
 			// 笔活动窗口内的 touch 一律视为掌压 → 无视，防止书写时掌缘把页面拖走。
@@ -1046,6 +1219,14 @@ export class InkOverlayEngine {
 	};
 
 	private onPointerMove = (e: PointerEvent): void => {
+		// 直尺拖动/旋转进行中：只驱动尺子，不碰任何墨迹/滚动手势
+		if (this.rulerDrag) {
+			if (e.pointerId !== this.rulerDrag.pointerId) return;
+			e.preventDefault();
+			e.stopPropagation();
+			this.applyRulerDrag(e);
+			return;
+		}
 		// 笔悬停（未接触，悬空 ~1cm 即发 pointermove）也要刷新笔活动窗口 ——
 		// 这是成熟软件（Samsung Notes / OneNote）pen-first 拒掌的通用做法：
 		// 大鱼际先落、笔后到的空档里，掌压 touch 一律无视。悬停一出现，
@@ -1144,6 +1325,11 @@ export class InkOverlayEngine {
 	}
 
 	private onPointerUp = (e: PointerEvent): void => {
+		// 直尺拖动收尾：不产生数据，直接结束
+		if (this.rulerDrag) {
+			if (e.pointerId === this.rulerDrag.pointerId) this.rulerDrag = null;
+			return;
+		}
 		const g = this.active;
 		if (!g || e.pointerId !== g.pointerId) return;
 		e.preventDefault();
@@ -1170,6 +1356,11 @@ export class InkOverlayEngine {
 	};
 
 	private onPointerCancel = (e: PointerEvent): void => {
+		// 直尺拖动被系统打断：同 up，直接收
+		if (this.rulerDrag) {
+			if (e.pointerId === this.rulerDrag.pointerId) this.rulerDrag = null;
+			return;
+		}
 		const g = this.active;
 		if (!g || e.pointerId !== g.pointerId) return;
 		// ⚠️ 断触容错：不立刻丢笔。S Pen 抬笔瞬间 / 掌压边缘都会发 cancel。
@@ -1193,6 +1384,11 @@ export class InkOverlayEngine {
 
 	/** 手势期间（笔迹或手指滚动）的 touchmove 一律拦下：touch-action 已是 none，这里兜底防掌压滚动与下拉刷新。 */
 	private onTouchMoveGuard = (e: TouchEvent): void => {
+		// 手指拖直尺时 touch-action:none 之外再兜一道（防页面跟着滚）
+		if (this.rulerDrag) {
+			e.preventDefault();
+			return;
+		}
 		const g = this.active;
 		if (!g) return;
 		if (g.tool.mode === 'scroll' || g.stroke) e.preventDefault();
@@ -1361,11 +1557,21 @@ export class InkOverlayEngine {
 		};
 
 		const css = this.clientToCss(sf, e.clientX, e.clientY);
-		const pdf = this.cssToPdf(sf, css.x, css.y);
+		let pdf = this.cssToPdf(sf, css.x, css.y);
 		if (!pdf) return;
+		// 直尺：起笔就落在尺沿感应带内 → 整笔从第一点起就是直线（投影这个起点）。
+		// 起笔在带外、后滑进带内的情形由 appendDrawPoint 判，自由前缀保持不动。
+		let penCss = css;
+		if (tool.mode === 'pen' && this.ruler) {
+			const pr = this.projectForRuler(g, css);
+			if (g.rulerSnapped && pr) {
+				penCss = pr.css;
+				pdf = pr.pdf;
+			}
+		}
 		g.lastRaw = pdf;
 		// 速度证据的起点（terminalMotion 要 ≥2 个采样才算得出末端速度）
-		g.recentRaw = [{ x: css.x, y: css.y, at: performance.now() }];
+		g.recentRaw = [{ x: penCss.x, y: penCss.y, at: performance.now() }];
 		g.mergeCount = 0;
 
 		if (tool.mode === 'pen') {
@@ -1574,9 +1780,20 @@ export class InkOverlayEngine {
 		rect?: DOMRect,
 		vp?: any,
 	): void {
-		const css = this.clientToCss(g.surface, clientX, clientY, rect);
-		const pdf = this.cssToPdf(g.surface, css.x, css.y, vp);
+		const css0 = this.clientToCss(g.surface, clientX, clientY, rect);
+		let css = css0;
+		let pdf = this.cssToPdf(g.surface, css.x, css.y, vp);
 		if (!pdf) return;
+		// 直尺投影（仅 pen 手势）：未贴尺时点进感应带 → 标记贴尺并投影；已贴尺
+		// → 后续点全部投影到尺沿。投影失败（出页边界）保留原始点，
+		// 贴尺前缀与后续自由段的行为不变。
+		if (g.tool.mode === 'pen' && this.ruler) {
+			const pr = this.projectForRuler(g, css, rect);
+			if (g.rulerSnapped && pr) {
+				css = pr.css;
+				pdf = pr.pdf;
+			}
+		}
 		this.appendPdfPoint(g, pdf, css, rawPressure, pointerType, vp);
 	}
 

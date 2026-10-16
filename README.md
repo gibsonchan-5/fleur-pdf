@@ -114,6 +114,11 @@ Stylus ink is rendered on the plugin's own overlay canvases and persisted in a s
   a lower resolution (*Balanced* ≈ half the pixels, *Smooth* ≈ 40%), which usually makes it
   responsive again. This changes **on-screen resolution only** — stroke data, coordinates, hit
   testing and exports are unaffected, and *Native* restores full sharpness at any time.
+- **Ruler** (pen bar → ruler icon, Apple Notes style): tap to place a translucent ruler on the page —
+  drag its body to move, drag the round handle to rotate. Strokes drawn along the highlighted edge
+  snap to a straight line in real time (works with pen and highlighter); strokes away from the edge
+  are unaffected. Toggle the icon again to hide it. The ruler is session-only (not a setting) and
+  the resulting straight strokes are ordinary ink — undo, eraser, sync and export all behave as usual.
 - **Stroke-break / lag diagnostics** (command palette → 「手写断触诊断」, mobile only): a passive,
   command-gated recorder that samples pointer and touch timing plus frame gaps while you write, and
   saves them to `FleurPDF/ink-debug.json` and `FleurPDF/ink-debug.md` inside your vault.
@@ -344,6 +349,10 @@ PDF、每次批注落盘、检测到副本变更；编辑冲突按修改时刻�
   字却跟不上笔尖」的卡顿，可在设置 → 移动端手写批注里把这一项改为「均衡」（像素量约减半）或
   「流畅」（约减六成），通常会立刻跟手。它**只改显示分辨率**：笔迹数据、坐标、命中测试、导出一律
   不受影响，随时改回「原始」即可恢复最锐利的笔迹。
+- **直尺**（笔盒 → 直尺图标，Apple Notes 式）：点按在页面上放一把半透明直尺 —— 拖尺身移动、
+  拖右端圆手柄旋转。贴着高亮尺沿书写的笔迹会实时投影成直线（钢笔 / 荧光笔都可用）；离沿的
+  笔迹不受任何影响。再点一次图标即收起。直尺是会话内的（不进设置），画出的直线就是普通笔迹 ——
+  撤销、橡皮、同步、导出一律按普通笔迹处理。
 - **断触 / 卡顿诊断**（命令面板 → 「手写断触诊断」，仅移动端）：一个被命令开关的被动记录器，
   在你书写期间采样指针/触摸时序与帧间隔，写入 vault 内的 `FleurPDF/ink-debug.json` 与
   `FleurPDF/ink-debug.md`。**这两个文件只落在本机，插件不上传任何内容，也没有遥测。**
