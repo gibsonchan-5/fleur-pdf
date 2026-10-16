@@ -87,14 +87,3 @@ export function rootToPageCss(
 ): { x: number; y: number } {
 	return { x: p.x - pageRect.left + rootRect.left, y: p.y - pageRect.top + rootRect.top };
 }
-
-/** 新开直尺的默认位姿：挂在视口上部居中（调用方传入根元素的可见尺寸）。 */
-export function defaultRulerState(rootW: number, rootH: number): RulerState {
-	return {
-		x: rootW / 2,
-		y: Math.max(RULER_DEFAULT_WIDTH, rootH * 0.3),
-		angle: 0,
-		length: RULER_DEFAULT_LENGTH,
-		width: RULER_DEFAULT_WIDTH,
-	};
-}

@@ -21,9 +21,7 @@ const R = await import(pathToFileURL(outFile).href);
 
 // ── 1. 水平尺（angle=0）：尺沿是 y = cy − width/2 的水平线 ──
 {
-	const r = R.defaultRulerState(800, 1000);
-	assert.equal(r.angle, 0);
-	assert.equal(r.length, R.RULER_DEFAULT_LENGTH);
+	const r = { x: 400, y: 300, angle: 0, length: R.RULER_DEFAULT_LENGTH, width: R.RULER_DEFAULT_WIDTH };
 	const line = R.rulerEdgeLine(r);
 	assert.ok(Math.abs(line.dx - 1) < 1e-12 && Math.abs(line.dy) < 1e-12, '方向沿 x 轴');
 	assert.ok(Math.abs(line.ey - (r.y - r.width / 2)) < 1e-9, `尺沿在上缘：${line.ey} vs ${r.y - r.width / 2}`);
@@ -36,7 +34,7 @@ const R = await import(pathToFileURL(outFile).href);
 
 // ── 2. 感应带：24px 内贴尺、外不贴，边界值含 ──
 {
-	const r = R.defaultRulerState(800, 1000);
+	const r = { x: 400, y: 300, angle: 0, length: 340, width: 46 };
 	const line = R.rulerEdgeLine(r);
 	assert.equal(R.nearEdge(line, 400, line.ey - R.RULER_SNAP_BAND_PX), true, '带内（上方）');
 	assert.equal(R.nearEdge(line, 400, line.ey + R.RULER_SNAP_BAND_PX), true, '带内（下方，无符号距离）');
@@ -45,8 +43,7 @@ const R = await import(pathToFileURL(outFile).href);
 
 // ── 3. 旋转 90°：尺沿变成竖直线，方向沿 y 轴 ──
 {
-	const r = R.defaultRulerState(800, 1000);
-	r.angle = Math.PI / 2; // d=(0,1)，法线 (dy,-dx)=(1,0) → 尺沿在中心右侧 x + w/2
+	const r = { x: 400, y: 300, angle: Math.PI / 2, length: 340, width: 46 }; // d=(0,1)，法线 (dy,-dx)=(1,0) → 尺沿在中心右侧 x + w/2
 	const line = R.rulerEdgeLine(r);
 	assert.ok(Math.abs(line.dx) < 1e-12 && Math.abs(line.dy - 1) < 1e-12);
 	assert.ok(Math.abs(line.ex - (r.x + r.width / 2)) < 1e-9);
@@ -81,13 +78,5 @@ const R = await import(pathToFileURL(outFile).href);
 	assert.ok(Math.abs(root.x - (css.x + pageRect.left - rootRect.left)) < 1e-9);
 }
 
-// ── 6. defaultRulerState：居中偏上、不小于尺宽 ──
-{
-	const r = R.defaultRulerState(600, 400);
-	assert.ok(Math.abs(r.x - 300) < 1e-9);
-	assert.ok(Math.abs(r.y - 120) < 1e-9, '0.3 × 400');
-	const tiny = R.defaultRulerState(600, 100);
-	assert.ok(tiny.y >= R.RULER_DEFAULT_WIDTH, '极矮视口不把尺顶出屏外');
-}
 
 console.log('✔ 直尺几何纯函数测试全部通过');

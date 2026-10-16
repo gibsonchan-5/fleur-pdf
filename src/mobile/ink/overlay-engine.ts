@@ -51,11 +51,12 @@ import {
 	type GraceMergeTuning,
 } from './grace-merge';
 import {
-	defaultRulerState,
 	nearEdge,
 	pageCssToRoot,
 	projectToEdge,
 	rootToPageCss,
+	RULER_DEFAULT_LENGTH,
+	RULER_DEFAULT_WIDTH,
 	rulerEdgeLine,
 	type RulerState,
 } from './ruler';
@@ -430,6 +431,9 @@ export class InkOverlayEngine {
 	/** 正在进行的直尺拖动/旋转。 */
 	private rulerDrag: { mode: 'move' | 'rotate'; pointerId: number; lastX: number; lastY: number } | null =
 		null;
+	/** 直尺挂载时是否替根元素补了 position:relative（卸载时还原）。 */
+	private rulerHostFixed = false;
+	private rulerHostPrevPos = '';
 
 	constructor(app: App) {
 		this.app = app;
@@ -649,14 +653,32 @@ export class InkOverlayEngine {
 		return this.ruler !== null && !!this.rulerEl?.isConnected;
 	}
 
-	/** 开关直尺。打开时沿用上次位姿（会话内记忆），第一次开则挂在视口上部居中。 */
+	/** 开关直尺。打开时把尺放进**当前可见视口**（会话记忆保留角度；x 仍在可见区时也保留）。 */
 	setRulerVisible(visible: boolean): void {
 		if (visible) {
 			if (!this.ruler) {
 				const root: HTMLElement | undefined = this.viewer?.viewer;
 				const w = root?.clientWidth ?? 800;
-				const h = root?.clientHeight ?? 1000;
-				this.ruler = defaultRulerState(w, h);
+				this.ruler = {
+					x: w / 2,
+					y: 0,
+					angle: 0,
+					length: RULER_DEFAULT_LENGTH,
+					width: RULER_DEFAULT_WIDTH,
+				};
+			}
+			// 开 = 出现在眼前：落点按可见视口算。⚠️ 不能用根元素自身的 clientHeight ——
+			// 那是**整个文档内容**的高度（几百页的 PDF 动辄几十万 px），按它取 30%
+			// 尺就被放在几十页之外，表现正是「点了按钮什么都没出现」。
+			const vis = this.visibleViewportInRoot();
+			if (vis) {
+				this.ruler.y = vis.top + Math.max(this.ruler.width, vis.height * 0.3);
+				if (
+					this.ruler.x < vis.left + this.ruler.length / 2 ||
+					this.ruler.x > vis.left + vis.width - this.ruler.length / 2
+				) {
+					this.ruler.x = vis.left + vis.width / 2;
+				}
 			}
 			this.mountRuler();
 		} else {
@@ -671,9 +693,46 @@ export class InkOverlayEngine {
 		return root ? root.getBoundingClientRect() : null;
 	}
 
+	/**
+	 * 可见视口在根内容空间里的范围（直尺「开」时的落点基准）。
+	 * 内容空间里视口顶的 y = scrollTop − (滚动容器顶 − 根顶)：滚过了多少，
+	 * 视口顶就在内容里多深。找不到滚动容器时退化为整根可见盒。
+	 */
+	private visibleViewportInRoot(): {
+		left: number;
+		top: number;
+		width: number;
+		height: number;
+	} | null {
+		const root: HTMLElement | undefined = this.viewer?.viewer;
+		if (!root) return null;
+		const rootRect = root.getBoundingClientRect();
+		const scroller = this.findScrollable(root);
+		if (!scroller) return { left: 0, top: 0, width: rootRect.width, height: rootRect.height };
+		const r = scroller.getBoundingClientRect();
+		return {
+			left: scroller.scrollLeft - (r.left - rootRect.left),
+			top: scroller.scrollTop - (r.top - rootRect.top),
+			width: r.width,
+			height: r.height,
+		};
+	}
+
 	private mountRuler(): void {
 		const root: HTMLElement | undefined = this.viewer?.viewer;
 		if (!root || !this.ruler) return;
+		// .pdfViewer 不保证是定位元素：直尺 absolute 的包含块必须是根本身，否则
+		// left/top 会被解析到某个更外层的祖先，尺出现在不相干的位置（同样表现为
+		// 「点了按钮看不见」）。relative 对流内布局零影响，pdf.js 的页全在 .page
+		// （自带 relative）里定位，不受波及。
+		if (!this.rulerHostFixed) {
+			const pos = getComputedStyle(root).position;
+			if (!pos || pos === 'static') {
+				this.rulerHostPrevPos = root.style.position ?? '';
+				root.style.position = 'relative';
+				this.rulerHostFixed = true;
+			}
+		}
 		if (!this.rulerEl || !this.rulerEl.isConnected) {
 			const el = document.createElement('div');
 			el.addClass('fleur-ink-ruler');
@@ -689,6 +748,12 @@ export class InkOverlayEngine {
 	private unmountRuler(): void {
 		this.rulerEl?.remove();
 		this.rulerEl = null;
+		if (this.rulerHostFixed) {
+			const root: HTMLElement | undefined = this.viewer?.viewer;
+			if (root) root.style.position = this.rulerHostPrevPos;
+			this.rulerHostFixed = false;
+			this.rulerHostPrevPos = '';
+		}
 	}
 
 	private applyRulerTransform(): void {
