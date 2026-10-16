@@ -92,6 +92,17 @@ Then copy `main.js`, `manifest.json`, and `styles.css` to your vault's plugin fo
 - **Note Export Folder**: Specify where exported notes should be saved
 - **Sidebar Position**: Choose left or right sidebar
 
+### Cross-Device Sync (optional, off by default)
+
+Text annotations (highlights / underlines / comments / AI results) and stylus ink can each be synced
+between your devices. When enabled, the plugin keeps a visible copy per annotated PDF inside your
+vault — `FleurPDF/data/annotations/` for text annotations, `FleurPDF/data/ink/` for ink — which
+travels with whatever sync you already use (Remotely Save, iCloud, …). Files are merged
+read-merge-write when a PDF opens, after each save, and when a copy change is detected; edits
+resolve last-writer-wins by modification time, and deletions are recorded as tombstones so a stale
+copy on another device cannot resurrect deleted annotations. **Enable the toggles on every device.**
+The copies only ever live in your own vault — the plugin sends nothing anywhere and has no telemetry.
+
 ### Mobile Handwriting (Ink) Annotations
 
 Stylus ink is rendered on the plugin's own overlay canvases and persisted in a sidecar file under
@@ -314,6 +325,15 @@ npm run build
 - **默认下划线样式**：选择实线、虚线、点线或波浪线
 - **笔记导出文件夹**：指定导出笔记的保存位置
 - **侧边栏位置**：选择左侧或右侧边栏
+
+### 批注跨设备同步（可选，默认关）
+
+文本批注（高亮 / 划线 / 批注 / AI 结果）与手写笔迹都可在多台设备间同步。开启后，插件会在 vault 内
+为每本有批注的 PDF 保留一份可见副本——文本批注在 `FleurPDF/data/annotations/`，手写笔迹在
+`FleurPDF/data/ink/`——随你现有的同步方式（Remotely Save、iCloud 等）跨设备流动。合并时机：打开
+PDF、每次批注落盘、检测到副本变更；编辑冲突按修改时刻后写者胜，删除记录为持久化墓碑，其他设备上的
+旧副本不会让已删批注「复活」。**需要在每台设备上分别开启开关。** 副本只存在于你自己的 vault 中，
+插件不向任何服务器发送内容，也没有遥测。
 
 ### 移动端手写批注
 
