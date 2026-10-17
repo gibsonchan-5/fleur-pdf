@@ -2167,10 +2167,10 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
 
 /* ===== 直尺（手写模式可选工具，Apple Notes 式透明刻度尺）=====
    挂在 pdf.js viewer 根上，随内容滚动。拖尺身移动、拖右端圆钮旋转、
-   拖左右两端调长短（锚另一端）；落点进入尺沿（上缘功能线）感应带的
-   笔迹由引擎实时投影到尺沿，表现为「贴尺沿书写自动变直」。
+   拖左右两端调长短（锚另一端）；尺子盖在纸面上，工作边是尺身下沿，
+   划线经过尺子（落在下沿感应带或尺身上）就沿下沿被拉直（引擎投影）。
    刻度（厘米/半厘米/毫米三层渐变 + 厘米数字）由引擎按当前缩放内联
-   渲染到 -scale 层；颜色全走主题变量，深浅色不用硬编。
+   渲染到 -scale 层，从下沿向上生长；颜色全走主题变量，深浅色不用硬编。
    ============================================================ */
 .fleur-ink-ruler {
   position: absolute;
@@ -2187,7 +2187,7 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
 .fleur-ink-ruler:active {
   cursor: grabbing;
 }
-/* 刻度层：背景渐变与数字 span 均由引擎内联写入（间距随缩放） */
+/* 刻度层：背景渐变与数字 span 均由引擎内联写入（间距随缩放，锚在下沿） */
 .fleur-ink-ruler-scale {
   position: absolute;
   inset: 0;
@@ -2197,7 +2197,7 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
 }
 .fleur-ink-ruler-scale span {
   position: absolute;
-  top: 16px;
+  bottom: 15px;
   font-size: 9px;
   line-height: 1;
   font-weight: 500;
@@ -2206,12 +2206,12 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   pointer-events: none;
   user-select: none;
 }
-/* 功能边（贴尺感应的工作边）：降饱和 accent 细线 */
+/* 功能边（贴尺感应的工作边 = 尺身下沿）：降饱和 accent 细线 */
 .fleur-ink-ruler-edge {
   position: absolute;
   left: 2px;
   right: 2px;
-  top: -1px;
+  bottom: -1px;
   height: 2px;
   border-radius: 1px;
   background: color-mix(in srgb, var(--interactive-accent) 65%, transparent);
