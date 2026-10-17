@@ -21,7 +21,7 @@ const R = await import(pathToFileURL(outFile).href);
 
 // ── 1. 水平尺（angle=0）：尺沿是 y = cy − width/2 的水平线 ──
 {
-	const r = { x: 400, y: 300, angle: 0, length: R.RULER_DEFAULT_LENGTH, width: R.RULER_DEFAULT_WIDTH };
+	const r = { x: 400, y: 300, angle: 0, length: 340, width: R.RULER_DEFAULT_WIDTH };
 	const line = R.rulerEdgeLine(r);
 	assert.ok(Math.abs(line.dx - 1) < 1e-12 && Math.abs(line.dy) < 1e-12, '方向沿 x 轴');
 	assert.ok(Math.abs(line.ey - (r.y - r.width / 2)) < 1e-9, `尺沿在上缘：${line.ey} vs ${r.y - r.width / 2}`);
@@ -32,13 +32,34 @@ const R = await import(pathToFileURL(outFile).href);
 	assert.ok(Math.abs(q.x - (r.x + 100)) < 1e-9 && Math.abs(q.y - line.ey) < 1e-9);
 }
 
-// ── 2. 感应带：24px 内贴尺、外不贴，边界值含 ──
+// ── 2. 感应带：单侧（仅尺沿外侧），0 ≤ 侧距 ≤ 24，边界值含 ──
+// ⚠️ 断言反转记录（Apple Notes 对齐）：原「带内（下方，无符号距离）= true」
+// 反转为 false —— 尺沿是笔画的下限，压着尺身写（内侧）不再吸附。其余断言不变。
 {
 	const r = { x: 400, y: 300, angle: 0, length: 340, width: 46 };
 	const line = R.rulerEdgeLine(r);
-	assert.equal(R.nearEdge(line, 400, line.ey - R.RULER_SNAP_BAND_PX), true, '带内（上方）');
-	assert.equal(R.nearEdge(line, 400, line.ey + R.RULER_SNAP_BAND_PX), true, '带内（下方，无符号距离）');
-	assert.equal(R.nearEdge(line, 400, line.ey - R.RULER_SNAP_BAND_PX - 0.01), false, '带外');
+	assert.equal(R.nearEdge(line, 400, line.ey - R.RULER_SNAP_BAND_PX), true, '带内（外侧=上方）');
+	assert.equal(R.nearEdge(line, 400, line.ey), true, '骑线（侧距 0）含入');
+	assert.equal(R.nearEdge(line, 400, line.ey + 1), false, '内侧（尺身里）不贴尺');
+	assert.equal(R.nearEdge(line, 400, line.ey + R.RULER_SNAP_BAND_PX), false, '内侧带深同样不贴尺');
+	assert.equal(R.nearEdge(line, 400, line.ey - R.RULER_SNAP_BAND_PX - 0.01), false, '外侧带外');
+}
+
+// ── 2b. edgeSide 符号 + shiftEdgeOutward 外移（任意角度一致性）──
+{
+	const r = { x: 100, y: 200, angle: -0.7, length: 300, width: 40 };
+	const line = R.rulerEdgeLine(r);
+	// 外法线 n=(dy,−dx)：沿 n 走 10px 的点侧距 = +10；反向 = −10
+	const nx = line.dy;
+	const ny = -line.dx;
+	assert.ok(Math.abs(R.edgeSide(line, line.ex + nx * 10, line.ey + ny * 10) - 10) < 1e-9, '外侧为正');
+	assert.ok(Math.abs(R.edgeSide(line, line.ex - nx * 10, line.ey - ny * 10) + 10) < 1e-9, '内侧为负');
+	// 外移 dist 后：原线上点相对新线侧距 = −dist；新线上点 = 0
+	const shifted = R.shiftEdgeOutward(line, 5);
+	assert.ok(Math.abs(R.edgeSide(shifted, line.ex, line.ey) + 5) < 1e-9, '外移后原线在内侧');
+	assert.ok(Math.abs(R.edgeSide(shifted, line.ex + nx * 5, line.ey + ny * 5)) < 1e-9, '新线即外移 5 的线');
+	// 方向向量不因平移改变（投影共线一致性保持）
+	assert.ok(shifted.dx === line.dx && shifted.dy === line.dy);
 }
 
 // ── 3. 旋转 90°：尺沿变成竖直线，方向沿 y 轴 ──

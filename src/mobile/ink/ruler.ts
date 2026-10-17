@@ -1,9 +1,10 @@
 // 直尺（参考 Apple Notes）：几何纯函数。
 //
 // 交互（已与用户确认）：
-//   · 可拖动 + 可旋转（拖尺身移动、拖右端手柄旋转）；
-//   · 贴尺沿的才变直：落点/采样点落在尺沿 ~24px 感应带内的那一笔，后续点
-//     实时投影到尺沿直线（所见即所得），不在带内的笔迹完全不受影响。
+//   · 可拖动 + 可旋转（拖尺身移动、拖右端手柄旋转、拖两端调长短）；
+//   · 贴尺只认尺沿**外侧**：笔画贴着尺子上缘（尺沿上方感应带内）书写才变直，
+//     直线落在尺沿上 —— 尺沿是笔画的下限（Apple Notes 语义）；压着尺身写
+//     不吸附。感应带 ~24px，手势内一旦贴尺即锁定（后续点即使离沿也沿线走）。
 //
 // 坐标系约定：直尺状态存放在 pdf.js viewer 根元素（.pdfViewer）的 CSS 像素
 // 坐标系里 —— 尺 DOM 挂在根元素上随内容滚动；页面 surface 的 CSS 坐标与
@@ -12,7 +13,7 @@
 //
 // 纯函数无 DOM 依赖，可无头测试（scripts/test-ink-ruler.mjs）。
 
-/** 贴尺感应带宽度（CSS px）：点距尺沿不超过此值即判「贴尺」。 */
+/** 贴尺感应带宽度（CSS px）：点落在尺沿**外侧**不超过此值即判「贴尺」。 */
 export const RULER_SNAP_BAND_PX = 24;
 
 /** 直尺状态（viewer 根元素 CSS 坐标系）。x/y 为尺中心。 */
@@ -33,8 +34,11 @@ export interface EdgeLine {
 	dy: number;
 }
 
-/** 移动端默认尺身尺寸（CSS px）：单手可拖动的长度上限内尽量长。 */
-export const RULER_DEFAULT_LENGTH = 340;
+/** 1 厘米 = 28.3465 PDF pt（72pt/in ÷ 2.54cm/in）。 */
+export const PT_PER_CM = 28.3464567;
+/** 默认尺长：10 厘米（引擎按当前缩放换算成 CSS px，尺面恰好铺满 0–10 刻度）。 */
+export const RULER_DEFAULT_CM = 10;
+/** 尺身厚度（CSS px），固定。 */
 export const RULER_DEFAULT_WIDTH = 46;
 
 /**
@@ -53,10 +57,24 @@ export function rulerEdgeLine(r: RulerState): EdgeLine {
 	};
 }
 
-/** 点到尺沿直线的距离（CSS px，无符号 —— 感应带在边两侧都算贴尺）。 */
+/** 点到尺沿直线的距离（CSS px，无符号）。 */
 export function distanceToEdge(line: EdgeLine, px: number, py: number): number {
 	// |(P − E) × d|：叉积的绝对值就是点到直线的垂距（d 是单位向量）。
 	return Math.abs((px - line.ex) * line.dy - (py - line.ey) * line.dx);
+}
+
+/**
+ * 点到尺沿的**有符号**侧距（CSS px）：沿外法线 n = (dy, −dx) 为正。
+ * angle=0 时 n 指向屏幕上方 —— s > 0 即点在尺沿外侧（尺子上方、纸面上），
+ * s < 0 即点落在尺身内。贴尺判定只认外侧（Apple Notes 语义，见文件头）。
+ */
+export function edgeSide(line: EdgeLine, px: number, py: number): number {
+	return (px - line.ex) * line.dy - (py - line.ey) * line.dx;
+}
+
+/** 把尺沿直线整体沿外法线方向外移 dist（投影目标线：笔画「坐」在尺沿上）。 */
+export function shiftEdgeOutward(line: EdgeLine, dist: number): EdgeLine {
+	return { ex: line.ex + line.dy * dist, ey: line.ey - line.dx * dist, dx: line.dx, dy: line.dy };
 }
 
 /** 点在尺沿上的垂足投影。 */
@@ -65,9 +83,10 @@ export function projectToEdge(line: EdgeLine, px: number, py: number): { x: numb
 	return { x: line.ex + t * line.dx, y: line.ey + t * line.dy };
 }
 
-/** 贴尺判定：点落在尺沿感应带内。 */
+/** 贴尺判定：点落在尺沿**外侧**感应带内（0 ≤ 侧距 ≤ bandPx；尺身一侧不算）。 */
 export function nearEdge(line: EdgeLine, px: number, py: number, bandPx = RULER_SNAP_BAND_PX): boolean {
-	return distanceToEdge(line, px, py) <= bandPx;
+	const s = edgeSide(line, px, py);
+	return s >= 0 && s <= bandPx;
 }
 
 /** 页面 surface CSS 坐标 → viewer 根坐标（无缩放差，纯平移）。 */

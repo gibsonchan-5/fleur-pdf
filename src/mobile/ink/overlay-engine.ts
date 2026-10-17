@@ -54,13 +54,15 @@ import {
 	nearEdge,
 	pageCssToRoot,
 	projectToEdge,
+	PT_PER_CM,
 	resizeRuler,
 	rootToPageCss,
-	RULER_DEFAULT_LENGTH,
+	RULER_DEFAULT_CM,
 	RULER_DEFAULT_WIDTH,
 	rulerEdgeLine,
 	type RulerResizeMode,
 	type RulerState,
+	shiftEdgeOutward,
 } from './ruler';
 
 /* ---------------------------------------------------------------------------
@@ -663,11 +665,12 @@ export class InkOverlayEngine {
 			if (!this.ruler) {
 				const root: HTMLElement | undefined = this.viewer?.viewer;
 				const w = root?.clientWidth ?? 800;
+				// 默认 10cm：CSS px = 28.3465 pt/cm × 缩放 —— 尺面恰好铺满 0–10 刻度。
 				this.ruler = {
 					x: w / 2,
 					y: 0,
 					angle: 0,
-					length: RULER_DEFAULT_LENGTH,
+					length: RULER_DEFAULT_CM * PT_PER_CM * this.currentScale(),
 					width: RULER_DEFAULT_WIDTH,
 				};
 			}
@@ -689,6 +692,13 @@ export class InkOverlayEngine {
 			this.ruler = null;
 			this.unmountRuler();
 		}
+	}
+
+	/** 直尺恢复水平（angle=0），中心与长短不动。尺未开时 no-op。 */
+	setRulerHorizontal(): void {
+		if (!this.ruler) return;
+		this.ruler.angle = 0;
+		this.applyRulerTransform();
 	}
 
 	/** viewer 根元素的包围盒（直尺坐标系与页面坐标互转的基准）。 */
@@ -813,7 +823,7 @@ export class InkOverlayEngine {
 		const key = `${scale}|${Math.round(r.length)}`;
 		if (key === this.rulerScaleKey) return;
 		this.rulerScaleKey = key;
-		const cm = 28.3465 * scale;
+		const cm = PT_PER_CM * scale;
 		const mm = cm / 10;
 		const tick = 'color-mix(in srgb, var(--text-normal) 55%, transparent)';
 		const tickSoft = 'color-mix(in srgb, var(--text-normal) 35%, transparent)';
@@ -832,7 +842,8 @@ export class InkOverlayEngine {
 		scaleEl.style.backgroundRepeat = 'repeat-x';
 		scaleEl.style.backgroundPosition = '0 0';
 		scaleEl.textContent = '';
-		const n = Math.floor(r.length / cm);
+		// +1e-6：尺长恰为整厘米时（10×cm）防浮点把最后一个数字 floor 掉
+		const n = Math.floor(r.length / cm + 1e-6);
 		for (let i = 0; i <= n; i++) {
 			const s = document.createElement('span');
 			s.textContent = String(i);
@@ -893,10 +904,12 @@ export class InkOverlayEngine {
 	}
 
 	/**
-	 * 贴尺判定 + 投影（ pen 手势路径专用）。
+	 * 贴尺判定 + 投影（ pen 手势路径专用）。Apple Notes 语义：尺沿是笔画的**下限**。
 	 *
-	 * 未贴尺：点落在尺沿感应带内 → 本手势标记贴尺，并把**这一点起**投影到尺沿。
+	 * 未贴尺：点落在尺沿**外侧**（尺子上方的纸面）感应带内 → 本手势标记贴尺。
+	 *   压着尺身写（内侧）不吸附。
 	 * 已贴尺：所有点投影（手在带外也沿线走 —— 直尺锁定的语义）。
+	 * 投影目标 = 尺沿外移半个笔宽：笔画「坐」在尺沿上呈现于尺子上端。
 	 * 投影点出了页面边界就不落墨（v1 不做跨页长直线，越界即断）。
 	 * 返回 null = 不投影（保持原始点）。
 	 */
@@ -916,7 +929,8 @@ export class InkOverlayEngine {
 			if (!nearEdge(line, root.x, root.y)) return null;
 			g.rulerSnapped = true;
 		}
-		const q = projectToEdge(line, root.x, root.y);
+		const half = g.tool.mode === 'pen' ? g.tool.width / 2 : 0;
+		const q = projectToEdge(half > 0 ? shiftEdgeOutward(line, half) : line, root.x, root.y);
 		const pageCss = rootToPageCss(q, rect, rootRect);
 		if (
 			pageCss.x < 0 ||

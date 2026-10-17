@@ -863,10 +863,10 @@ export class InkUI {
 			bar.appendChild(this.buildEraserPop());
 		}
 
-		// ── 直尺：贴尺沿书写自动变直（可拖动 / 旋转，Apple Notes 式）──
+		// ── 直尺：贴着尺子上缘书写自动变直（可拖动 / 旋转 / 调长短，Apple Notes 式）──
 		const rulerBtn = bar.createDiv('fleur-pdf-ink-btn');
 		setIcon(rulerBtn, 'ruler');
-		rulerBtn.setAttribute('aria-label', '直尺（贴尺沿书写变直，拖尺身移动 / 拖手柄旋转）');
+		rulerBtn.setAttribute('aria-label', '直尺（贴着尺上缘书写变直；拖尺身移动 / 圆钮旋转 / 两端调长短）');
 		if (this.rulerOn) rulerBtn.addClass('is-active');
 		rulerBtn.addEventListener('click', (e) => {
 			e.stopPropagation();
@@ -874,6 +874,17 @@ export class InkUI {
 			this.overlay.setRulerVisible(this.rulerOn);
 			this.refreshPenBar();
 		});
+
+		// 直尺恢复水平：只在尺开着时出现（旋转歪了一键扳平）
+		if (this.rulerOn) {
+			const levelBtn = bar.createDiv('fleur-pdf-ink-btn');
+			setIcon(levelBtn, 'rotate-ccw');
+			levelBtn.setAttribute('aria-label', '直尺恢复水平');
+			levelBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.overlay.setRulerHorizontal();
+			});
+		}
 
 		bar.createDiv('fleur-pdf-ink-sep');
 
