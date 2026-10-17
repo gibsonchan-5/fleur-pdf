@@ -18,8 +18,9 @@
 /** 贴尺感应带：工作边外侧宽度（CSS px）。 */
 export const RULER_SNAP_BAND_PX = 24;
 
-/** 吸附后笔迹与工作边之间留的极小缝（CSS px）—— 看得见贴着尺沿，又不压进尺身。 */
-export const RULER_STROKE_GAP_PX = 2;
+/** 吸附后笔迹与工作边之间留的小缝（CSS px）—— 4px 才能跟尺沿的 accent 细线拉开，
+ * 细钢笔也看得清「线是线、尺是尺」；再大就失去「贴着尺」的语义了。 */
+export const RULER_STROKE_GAP_PX = 4;
 
 /** 尺子相对笔画的朝向：'below'=尺在笔画下方（工作边上缘）；'above'=尺在上方（工作边下缘）。 */
 export type RulerSide = 'above' | 'below';

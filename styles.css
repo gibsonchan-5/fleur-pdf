@@ -2177,10 +2177,10 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   z-index: 5;
   touch-action: none;
   border-radius: 6px;
-  /* 尺身不透明，只在工作边留一条 3px 全透明缝：经过尺沿的墨在缝里露出一线，
+  /* 尺身不透明，只在工作边留一条 6px 全透明缝：经过尺沿的墨在缝里露出一线，
      「有没有划线」看得见；其余尺身挡住旧笔迹（整片半透明会透出残笔）。
      is-side-above（尺在笔画上方、工作边在下缘）时缝翻到下缘。 */
-  background: linear-gradient(to bottom, transparent 0 3px, var(--background-primary) 3px);
+  background: linear-gradient(to bottom, transparent 0 6px, var(--background-primary) 6px);
   border: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
   cursor: grab;
@@ -2214,7 +2214,7 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   left: 2px;
   right: 2px;
   top: -1px;
-  height: 2px;
+  height: 1px;
   border-radius: 1px;
   background: color-mix(in srgb, var(--interactive-accent) 65%, transparent);
   pointer-events: none;
@@ -2224,7 +2224,7 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   bottom: -1px;
 }
 .fleur-ink-ruler.is-side-above {
-  background: linear-gradient(to top, transparent 0 3px, var(--background-primary) 3px);
+  background: linear-gradient(to top, transparent 0 6px, var(--background-primary) 6px);
 }
 .fleur-ink-ruler.is-side-above .fleur-ink-ruler-scale span {
   top: auto;
