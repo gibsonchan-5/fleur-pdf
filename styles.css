@@ -2177,9 +2177,9 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   z-index: 5;
   touch-action: none;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--background-primary) 42%, transparent);
-  -webkit-backdrop-filter: blur(10px) saturate(1.1);
-  backdrop-filter: blur(10px) saturate(1.1);
+  /* 尺身必须全不透明：墨层画布（z 3/4）在尺（z 5）之下，
+     半透明会透出没被吸附拉直、从尺身上划过去的原笔迹（90% 仍见淡底） */
+  background: var(--background-primary);
   border: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
   cursor: grab;
