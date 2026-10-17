@@ -809,7 +809,7 @@ export class InkOverlayEngine {
 
 	/**
 	 * 刻度层渲染（Apple Notes 式厘米刻度）：三层 repeating 渐变（毫米/半厘米/厘米）
-	 * 锚在下沿向上生长 + 每厘米一个数字 span。间距 = 28.3465pt/cm × 缩放。
+	 * 锚在上缘向下生长 + 每厘米一个数字 span。间距 = 28.3465pt/cm × 缩放。
 	 * 缓存键 `${scale}|${length}`：拖移/旋转逐帧调用不重建；缩放或长短变化才重画。
 	 * 毫米刻度间距 < 4.5px 时省略（低缩放下密成噪声）。
 	 */
@@ -840,8 +840,8 @@ export class InkOverlayEngine {
 		scaleEl.style.backgroundImage = layers.join(', ');
 		scaleEl.style.backgroundSize = sizes.join(', ');
 		scaleEl.style.backgroundRepeat = 'repeat-x';
-		// 锚在下沿：刻度从尺子下边缘向上生长（工作边在下沿，与贴尺方向一致）
-		scaleEl.style.backgroundPosition = '0 100%';
+		// 锚在上缘：刻度从尺子上边缘向下生长（工作边在上缘，线在其上、尺身在其下）
+		scaleEl.style.backgroundPosition = '0 0';
 		scaleEl.textContent = '';
 		// +1e-6：尺长恰为整厘米时（10×cm）防浮点把最后一个数字 floor 掉
 		const n = Math.floor(r.length / cm + 1e-6);
@@ -905,14 +905,14 @@ export class InkOverlayEngine {
 	}
 
 	/**
-	 * 贴尺判定 + 投影（ pen 手势路径专用）。Apple Notes 语义：尺子盖在纸上，工作边是
-	 * 尺身**下沿**，划线经过尺子就沿下沿变直。
+	 * 贴尺判定 + 投影（ pen 手势路径专用）。Apple Notes 语义：尺子躺在线的**下方**，
+	 * 工作边是尺身上缘，划线经过尺子就沿上缘变直。
 	 *
-	 * 未贴尺：点落在下沿外侧感应带（≤24px）**或尺身任意处**（内侧 ≤ 尺宽）→ 本手势贴尺。
-	 *   尺子上方（外侧更远处起笔）不吸附。
+	 * 未贴尺：点落在上缘外侧感应带（≤24px）**或尺身任意处**（内侧 ≤ 尺宽）→ 本手势贴尺。
+	 *   尺子下方（越过下缘）不吸附。
 	 * 已贴尺：所有点投影（手在带外也沿线走 —— 直尺锁定的语义）。
-	 * 投影目标 = 下沿外移（下移）半个笔宽：整条拉直的墨落在尺子下方，不被半透明尺身
-	 *   透出（否则会在下沿看到一条发虚的残笔 —— 用户明确不想要）。
+	 * 投影目标 = 上缘外移（上移）半个笔宽：整条拉直的墨落在尺子上方，尺身在线之下，
+	 *   既不遮墨也不从半透明尺身透出残笔。
 	 * 投影点出了页面边界就不落墨（v1 不做跨页长直线，越界即断）。
 	 * 返回 null = 不投影（保持原始点）。
 	 */

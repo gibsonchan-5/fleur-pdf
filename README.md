@@ -118,10 +118,10 @@ Stylus ink is rendered on the plugin's own overlay canvases and persisted in a s
   centimetre graduations (default length 10 cm at the current zoom) — drag its body to move, drag the
   round knob to rotate, drag either end to change its length (the other end stays anchored), and use
   the level button that appears beside the ruler icon to snap it back to horizontal. Like Apple Notes,
-  the ruler lies *over* the page and its working edge is the **bottom edge**: a stroke drawn across the
-  ruler straightens along that bottom edge, and the ink is nudged fully below the ruler so none of it
-  bleeds through the translucent body. Works with pen and highlighter; strokes away from the ruler are
-  unaffected. Toggle the icon again to hide it. The ruler is session-only (not a setting) and the
+  the ruler lies *below* the line you draw and its working edge is the **top edge**: a stroke drawn
+  across the ruler straightens along that top edge, and the ink is nudged fully above the ruler so the
+  body never covers or bleeds it through. Works with pen and highlighter; strokes away from the ruler
+  are unaffected. Toggle the icon again to hide it. The ruler is session-only (not a setting) and the
   resulting straight strokes are ordinary ink — undo, eraser, sync and export all behave as usual.
 - **Stroke-break / lag diagnostics** (command palette → 「手写断触诊断」, mobile only): a passive,
   command-gated recorder that samples pointer and touch timing plus frame gaps while you write, and
@@ -356,8 +356,8 @@ PDF、每次批注落盘、检测到副本变更；编辑冲突按修改时刻�
 - **直尺**（笔盒 → 直尺图标，Apple Notes 式）：点按在页面上放一把带厘米刻度的半透明磨砂直尺，
   默认长 10 厘米（按当前缩放换算，尺面铺满 0–10 刻度）—— 拖尺身移动、拖右端圆钮旋转、
   拖左右两端调长短（另一端锚定），直尺图标旁会出现「恢复水平」按钮一键扳平。书写逻辑与
-  Apple Notes 对齐：尺子盖在纸面上，工作边是**尺身下沿**——划线经过尺子就沿下沿被拉直，且整条
-  墨落在尺子下方、不会从半透明尺身里透出（下沿看不到发虚的残笔）。钢笔 / 荧光笔都可用，离尺
+  Apple Notes 对齐：尺子躺在要画的线**下方**，工作边是**尺身上缘**——划线经过尺子就沿上缘被拉直，
+  且整条墨落在尺子上方，尺身既不遮墨也不从半透明尺身透出残笔。钢笔 / 荧光笔都可用，离尺
   较远的笔迹不受影响。再点一次图标即收起。直尺是会话内的（不进设置），画出的直线就是普通笔迹 ——
   撤销、橡皮、同步、导出一律按普通笔迹处理。
 - **断触 / 卡顿诊断**（命令面板 → 「手写断触诊断」，仅移动端）：一个被命令开关的被动记录器，
