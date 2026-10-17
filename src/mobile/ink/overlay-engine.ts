@@ -1469,6 +1469,16 @@ export class InkOverlayEngine {
 		e.stopPropagation();
 		this.penActivityUntil = performance.now() + PEN_TOUCH_REJECTION_MS;
 
+		// moveMode 优先：形状被点中后进入拖拽，工具仍是 pen/shape，但必须走拖拽逻辑
+		if (g.moveMode) {
+			const sf = g.surface;
+			const css = this.clientToCss(sf, e.clientX, e.clientY);
+			const pdf = this.cssToPdf(sf, css.x, css.y);
+			if (!pdf) return;
+			this.previewMove(g, pdf);
+			return;
+		}
+
 		if (g.tool.mode === 'pen') {
 			this.appendDrawEvent(e);
 			return;
@@ -1804,6 +1814,44 @@ export class InkOverlayEngine {
 		g.recentRaw = [{ x: penCss.x, y: penCss.y, at: performance.now() }];
 		g.mergeCount = 0;
 
+		// 形状选中/拖拽：pen/shape 模式下，点中已有选区则拖拽；点中形状轮廓则建选区。
+		if (tool.mode === 'pen' || tool.mode === 'shape') {
+			const scale = this.viewportFor(sf.page)?.scale ?? 1;
+			// ① 已有选区：框内空白处直接进入拖拽
+			if (this.selection?.page === sf.page && this.pointInSelection(pdf)) {
+				g.moveMode = true;
+				g.moveOrig = new Map();
+				g.moveRectOrig = { ...this.selection.rect };
+				const list = this.pages.get(sf.page) ?? [];
+				for (const s of list) {
+					if (this.selection.ids.has(s.id)) g.moveOrig.set(s.id, s.pts.slice());
+				}
+				g.moveStart = pdf;
+				this.active = g;
+				if (e.pointerType === 'mouse') sf.committed.setPointerCapture(e.pointerId);
+				this.drawSelection(sf);
+				return;
+			}
+			// ② 新建选区：点中形状轮廓
+			const hitR = 12 / scale;
+			const hitStroke = this.hitTestShape(sf.page, pdf.x, pdf.y, hitR);
+			if (hitStroke) {
+				const x0 = Math.min(hitStroke.pts[0], hitStroke.pts[3]);
+				const x1 = Math.max(hitStroke.pts[0], hitStroke.pts[3]);
+				const y0 = Math.min(hitStroke.pts[1], hitStroke.pts[4]);
+				const y1 = Math.max(hitStroke.pts[1], hitStroke.pts[4]);
+				this.selection = { page: sf.page, ids: new Set([hitStroke.id]), rect: { x0, y0, x1, y1 } };
+				g.moveMode = true;
+				g.moveOrig = new Map([[hitStroke.id, hitStroke.pts.slice()]]);
+				g.moveRectOrig = { x0, y0, x1, y1 };
+				g.moveStart = pdf;
+				this.active = g;
+				if (e.pointerType === 'mouse') sf.committed.setPointerCapture(e.pointerId);
+				this.drawSelection(sf);
+				return;
+			}
+		}
+
 		if (tool.mode === 'pen') {
 			// 鼠标无压感：取 0.75 使宽度因子恰为 1.0×设定值
 			const pressure = e.pointerType === 'pen' ? clamp01(e.pressure || 0.5) : 0.75;
@@ -1880,6 +1928,18 @@ export class InkOverlayEngine {
 		if (!g) return;
 		this.active = null;
 		const sf = g.surface;
+
+		// moveMode：形状被点中拖拽后的收尾
+		if (g.moveMode) {
+			this.clearDraft(sf);
+			if (commit && g.moved) {
+				this.pushUndo(g.snapshot);
+				this.emitChange();
+			} else {
+				this.restore(g.snapshot);
+			}
+			return;
+		}
 
 		if (g.tool.mode === 'scroll') {
 			// rAF 合帧里可能还有没应用的位移：收尾前 flush 干净，跟手零丢失
@@ -2311,6 +2371,30 @@ export class InkOverlayEngine {
 		return true;
 	}
 
+	/**
+	 * 点选命中检测（形状专用，tap-to-select 用）。
+	 * 返回最近命中的形状笔迹，未命中返回 null。
+	 */
+	private hitTestShape(page: number, x: number, y: number, r: number): InkStroke | null {
+		const list = this.pages.get(page);
+		if (!list) return null;
+		let best: InkStroke | null = null;
+		let bestD = Infinity;
+		for (const s of list) {
+			if (!isShapeStroke(s)) continue;
+			const d = shapeOutlineDistance(s, x, y);
+			if (d <= r && d < bestD) {
+				bestD = d;
+				best = s;
+			}
+		}
+		return best;
+	}
+
+	/**
+	 * 测试指针是否落在当前选区的某个调整手柄上（rect/ellipse 专用，直线不支持）。
+	 * 返回手柄方向，未命中返回 null。
+	 */
 	private drawEraserCursor(sf: Surface, cssX: number, cssY: number): void {
 		const vp = this.viewportFor(sf.page);
 		if (!vp) return;

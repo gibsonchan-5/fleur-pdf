@@ -140,7 +140,7 @@ export class InkUI {
 	private shapeKind: InkStrokeShape = 'rect';
 	private shapeFill: string | null = INK_SHAPE_DEFAULT_FILL;
 	private shapeColor = '#1f1f1f';
-	private shapeWidth = 3;
+	private shapeWidth = 1;
 	/**
 	 * 直尺开合（会话内存：不进设置、退出 Obsidian 即忘，与 Apple Notes 一致）。
 	 * 位置与角度的记忆在引擎（ruler 状态跨 attach/detach 存活），这里只记开合。
@@ -810,9 +810,17 @@ export class InkUI {
 		pop.toggleClass('is-open', willOpen);
 	}
 
-	/** 切形状（弹层内点选：就地更新高亮 + 下发引擎，不重建笔盒）。 */
+	/** 切形状（弹层内点选：就地更新高亮 + 显隐填充行 + 下发引擎，不重建笔盒）。 */
 	private setShapeKind(kind: InkStrokeShape): void {
 		this.shapeKind = kind;
+		// 直线无填充，隐藏色板行；切回矩形/圆形时重建弹层（重新生成填充行）
+		const pop = this.penBar?.querySelector<HTMLElement>('.fleur-pdf-ink-shape-pop');
+		if (pop) {
+			const fillRow = pop.querySelector('.fleur-pdf-ink-fill-row');
+			const divider = pop.querySelector('.fleur-pdf-ink-shape-divider');
+			if (fillRow) fillRow.toggleClass('is-hidden', kind === 'line');
+			if (divider) divider.toggleClass('is-hidden', kind === 'line');
+		}
 		this.applyTool();
 		this.penBar
 			?.findAll('.fleur-pdf-ink-shape-pop .fleur-pdf-ink-shape-opt')
@@ -825,7 +833,10 @@ export class InkUI {
 		this.applyTool();
 		this.penBar
 			?.findAll('.fleur-pdf-ink-shape-pop .fleur-pdf-ink-fill')
-			.forEach((el) => el.toggleClass('is-active', (el.getAttribute('data-fill') ?? null) === fill));
+			.forEach((el) => {
+				const val = el.getAttribute('data-fill');
+				el.toggleClass('is-active', val === fill || (fill === null && val === ''));
+			});
 	}
 
 	private setColor(color: string): void {
@@ -1306,37 +1317,48 @@ export class InkUI {
 	/** 形状弹层：形状三选一行 + 填充色板一行（末格「无填充」）。 */
 	private buildShapePop(): HTMLElement {
 		const pop = createDiv('fleur-pdf-ink-pop fleur-pdf-ink-shape-pop');
-		const row = pop.createDiv('fleur-pdf-ink-modes');
+
+		// 形状三选一（图标 + 文字标签）
+		const shapeRow = pop.createDiv('fleur-pdf-ink-shape-row');
 		for (const shape of ['rect', 'ellipse', 'line'] as const) {
-			const opt = row.createDiv('fleur-pdf-ink-shape-opt');
+			const opt = shapeRow.createDiv('fleur-pdf-ink-shape-opt');
 			opt.setAttribute('data-shape', shape);
 			setIcon(opt, SHAPE_ICON[shape]);
-			opt.setAttribute('aria-label', SHAPE_LABEL[shape]);
+			const lbl = opt.createDiv('fleur-pdf-ink-shape-lbl');
+			lbl.setText(SHAPE_LABEL[shape]);
 			if (shape === this.shapeKind) opt.addClass('is-active');
 			opt.addEventListener('click', (e) => {
 				e.stopPropagation();
 				this.setShapeKind(shape);
 			});
 		}
-		const fills = pop.createDiv('fleur-pdf-ink-colors');
-		for (const c of SHAPE_FILL_COLORS) {
-			const dot = fills.createDiv('fleur-pdf-ink-color fleur-pdf-ink-fill');
-			dot.setAttribute('data-fill', c);
-			dot.setCssStyles({ background: c });
-			if (c === this.shapeFill) dot.addClass('is-active');
-			dot.addEventListener('click', (e) => {
+
+		// 分隔线
+		pop.createDiv('fleur-pdf-ink-shape-divider');
+
+		// 填充色板（仅矩形 / 圆形，线条无填充）
+		if (this.shapeKind !== 'line') {
+			const fills = pop.createDiv('fleur-pdf-ink-fill-row');
+			for (const c of SHAPE_FILL_COLORS) {
+				const dot = fills.createDiv('fleur-pdf-ink-color fleur-pdf-ink-fill');
+				dot.setAttribute('data-fill', c);
+				dot.setCssStyles({ background: c });
+				if (c === this.shapeFill) dot.addClass('is-active');
+				dot.addEventListener('click', (e) => {
+					e.stopPropagation();
+					this.setShapeFill(c);
+				});
+			}
+			// 无填充：描边圆环
+			const none = fills.createDiv('fleur-pdf-ink-color fleur-pdf-ink-fill is-none');
+			none.setAttribute('aria-label', '无填充');
+			if (this.shapeFill === null) none.addClass('is-active');
+			none.addEventListener('click', (e) => {
 				e.stopPropagation();
-				this.setShapeFill(c);
+				this.setShapeFill(null);
 			});
 		}
-		// 「无填充」：斜杠圆环占位（只在描边，不填色）
-		const none = fills.createDiv('fleur-pdf-ink-color fleur-pdf-ink-fill is-none');
-		none.setAttribute('aria-label', '无填充');
-		if (this.shapeFill === null) none.addClass('is-active');
-		none.addEventListener('click', (e) => {
-			e.stopPropagation();
-			this.setShapeFill(null);
-		});
+
 		return pop;
 	}
 

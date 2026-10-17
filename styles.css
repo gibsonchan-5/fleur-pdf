@@ -2006,40 +2006,87 @@ body.fleur-pdf-mobile .fleur-pdf-ink-eraser-pop .fleur-pdf-ink-modes {
   justify-content: center;
 }
 
-/* ── 形状弹层：形状三选一行 + 填充色板一行 ── */
+/* ── 形状弹层：两段式（形状三选一 + 填充色板），线条无填充段 ── */
 body.fleur-pdf-mobile .fleur-pdf-ink-shape-pop {
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
-}
-
-body.fleur-pdf-mobile .fleur-pdf-ink-shape-pop .fleur-pdf-ink-modes {
-  display: flex;
   gap: 6px;
-  justify-content: center;
+  min-width: 130px;
 }
 
-/* 形状选项：图标胶囊（与橡皮的模式胶囊同尺寸语言） */
-body.fleur-pdf-mobile .fleur-pdf-ink-shape-opt {
-  width: 44px;
-  height: 32px;
+/* 形状行：三列均分，图标在上、标签文字在下 */
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-row {
   display: flex;
+  gap: 4px;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-opt {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  gap: 3px;
+  padding: 6px 2px 5px;
   border-radius: 9px;
   color: var(--text-muted);
+  cursor: pointer;
+  min-width: 0;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-opt svg {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-lbl {
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  text-align: center;
 }
 
 body.fleur-pdf-mobile .fleur-pdf-ink-shape-opt.is-active {
-  color: var(--text-normal);
-  background-color: var(--background-modifier-hover);
+  color: var(--interactive-accent);
+  background-color: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
 }
 
-/* 「无填充」占位：斜杠圆环，只在描边不填色 */
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-opt.is-active .fleur-pdf-ink-shape-lbl {
+  color: var(--interactive-accent);
+}
+
+/* 分隔线 */
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-divider {
+  height: 1px;
+  background: var(--background-modifier-border);
+  margin: 0 2px;
+  border-radius: 1px;
+}
+
+/* 填充色行 */
+body.fleur-pdf-mobile .fleur-pdf-ink-fill-row {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  align-items: center;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-fill-row.is-hidden {
+  display: none;
+}
+
+/* 分隔线在直线模式下隐藏 */
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-divider.is-hidden {
+  display: none;
+}
+
+/* 「无填充」：描边圆环，比斜杠图案更清晰 */
 body.fleur-pdf-mobile .fleur-pdf-ink-color.is-none {
-  background:
-    linear-gradient(45deg, transparent 44%, var(--text-muted) 44% 56%, transparent 56%),
-    var(--background-primary);
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--text-muted);
 }
 
 /* ── 移动端：批注浮动菜单按触摸尺寸放大 ──
