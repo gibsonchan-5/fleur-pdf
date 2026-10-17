@@ -778,7 +778,7 @@ export class InkOverlayEngine {
 			const pos = getComputedStyle(root).position;
 			if (!pos || pos === 'static') {
 				this.rulerHostPrevPos = root.style.position ?? '';
-				root.style.position = 'relative';
+				root.setCssStyles({ position: 'relative' });
 				this.rulerHostFixed = true;
 			}
 		}
@@ -807,7 +807,7 @@ export class InkOverlayEngine {
 		this.rulerScaleKey = '';
 		if (this.rulerHostFixed) {
 			const root: HTMLElement | undefined = this.viewer?.viewer;
-			if (root) root.style.position = this.rulerHostPrevPos;
+			if (root) root.setCssStyles({ position: this.rulerHostPrevPos });
 			this.rulerHostFixed = false;
 			this.rulerHostPrevPos = '';
 		}
@@ -868,11 +868,13 @@ export class InkOverlayEngine {
 		sizes.push(`${cm / 2}px 9px`);
 		layers.push(`linear-gradient(90deg, ${tick} 0 1px, transparent 1px)`);
 		sizes.push(`${cm}px 13px`);
-		scaleEl.style.backgroundImage = layers.join(', ');
-		scaleEl.style.backgroundSize = sizes.join(', ');
-		scaleEl.style.backgroundRepeat = 'repeat-x';
 		// 刻度锚在工作边那一侧：'below'（上缘）向下生长、'above'（下缘）向上生长
-		scaleEl.style.backgroundPosition = this.rulerSide === 'above' ? '0 100%' : '0 0';
+		scaleEl.setCssStyles({
+			backgroundImage: layers.join(', '),
+			backgroundSize: sizes.join(', '),
+			backgroundRepeat: 'repeat-x',
+			backgroundPosition: this.rulerSide === 'above' ? '0 100%' : '0 0',
+		});
 		scaleEl.textContent = '';
 		// +1e-6：尺长恰为整厘米时（10×cm）防浮点把最后一个数字 floor 掉
 		const n = Math.floor(r.length / cm + 1e-6);
