@@ -2183,10 +2183,10 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   background: linear-gradient(to bottom, transparent 0 6px, var(--background-primary) 6px);
   border: 1px solid color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
-  cursor: grab;
+  cursor: crosshair;
 }
 .fleur-ink-ruler:active {
-  cursor: grabbing;
+  cursor: crosshair;
 }
 /* 刻度层：背景渐变与数字 span 均由引擎内联写入（间距随缩放，锚在上缘） */
 .fleur-ink-ruler-scale {
@@ -2264,6 +2264,26 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
 }
 .fleur-ink-ruler:hover .fleur-ink-ruler-handle {
   opacity: 1;
+}
+/* 中央挪移把手：尺身已放行去书写，平移只认这个胶囊（避开刻度数字与工作边缝，
+   停在非工作边一侧） */
+.fleur-ink-ruler-grip {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 5px;
+  width: 56px;
+  height: 9px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text-muted) 28%, transparent);
+  cursor: grab;
+}
+.fleur-ink-ruler-grip:active {
+  cursor: grabbing;
+}
+.fleur-ink-ruler.is-side-above .fleur-ink-ruler-grip {
+  bottom: auto;
+  top: 5px;
 }
 
 /* ===== Fleur ink editor styles（生成区，勿手改；源：src/mobile/ink-css.ts） ===== */

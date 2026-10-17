@@ -115,8 +115,10 @@ Stylus ink is rendered on the plugin's own overlay canvases and persisted in a s
   responsive again. This changes **on-screen resolution only** — stroke data, coordinates, hit
   testing and exports are unaffected, and *Native* restores full sharpness at any time.
 - **Ruler** (pen bar → ruler icon, Apple Notes style): tap to place an opaque, frosted-white ruler with
-  centimetre graduations (default length 10 cm at the current zoom) — drag its body to move, drag the
-  round knob to rotate, drag either end to change its length (the other end stays anchored), and use
+  centimetre graduations (default length 10 cm at the current zoom) — the body itself is a drawing
+  surface (WYSIWYG: draw straight on the ruler and the line lands just outside the working edge), the
+  small pill grip in the middle moves it, the round knob rotates, and either end changes its length
+  (the other end stays anchored); use
   the level button that appears beside the ruler icon to snap it back to horizontal. Like Apple Notes,
   the ruler lies *below* the line you draw and its working edge is the **top edge** (switchable to the
   opposite side via the *Ruler side* setting): a stroke drawn
@@ -357,10 +359,12 @@ PDF、每次批注落盘、检测到副本变更；编辑冲突按修改时刻�
   「流畅」（约减六成），通常会立刻跟手。它**只改显示分辨率**：笔迹数据、坐标、命中测试、导出一律
   不受影响，随时改回「原始」即可恢复最锐利的笔迹。
 - **直尺**（笔盒 → 直尺图标，Apple Notes 式）：点按在页面上放一把带厘米刻度的磨砂白直尺（尺身
-  不透明，底下的旧笔迹不会大片透出来；只有工作边留一条 3px 透明缝，经过尺沿的墨在缝里露出
+  不透明，底下的旧笔迹不会大片透出来；只有工作边留一条 6px 透明缝，经过尺沿的墨在缝里露出
   一线，划没划线看得见），默认长 10 厘米（按当前缩放换算，尺面铺满 0–10 刻度）——
-  拖尺身移动、拖右端圆钮旋转、拖左右两端调长短（另一端锚定），直尺图标旁会出现「恢复水平」
-  按钮一键扳平；设置里可用「直尺朝向」选择尺子在笔画下方（默认）还是上方。书写逻辑与
+  尺身即书写面，所见即所得：直接在尺上画，墨沿工作边外侧落线；拖中央胶囊把手移动、
+  拖右端圆钮旋转、拖左右两端调长短（另一端锚定），其余尺面不感应拖拽、只管落墨，
+  直尺图标旁会出现「恢复水平」按钮一键扳平；设置里可用「直尺朝向」选择尺子在笔画
+  下方（默认）还是上方。书写逻辑与
   Apple Notes 对齐：尺子躺在要画的线的对面，工作边朝向笔画——划线经过尺子就沿工作边被拉直，
   且整条墨落在尺子外侧，只留一道小缝贴着尺沿，尺身不遮墨。钢笔 / 荧光笔都可用，离尺
   较远的笔迹不受影响。再点一次图标即收起。直尺是会话内的（不进设置），画出的直线就是普通笔迹 ——

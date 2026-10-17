@@ -777,13 +777,14 @@ export class InkOverlayEngine {
 			const el = document.createElement('div');
 			el.addClass('fleur-ink-ruler');
 			el.addClass(this.rulerSide === 'above' ? 'is-side-above' : 'is-side-below');
-			// 刻度层（渐变刻度 + 厘米数字）→ 功能边线 → 两端长短拖拽区 → 旋转钮。
-			// 尺身本体即根元素（半透明磨砂），不再单挂 -body。
+			// 刻度层（渐变刻度 + 厘米数字）→ 功能边线 → 两端长短拖拽区 → 旋转钮
+			// → 中央挪移把手。尺身本体可书写，不再是拖拽区。
 			el.createDiv('fleur-ink-ruler-scale');
 			el.createDiv('fleur-ink-ruler-edge');
 			el.createDiv('fleur-ink-ruler-end-l');
 			el.createDiv('fleur-ink-ruler-end-r');
 			el.createDiv('fleur-ink-ruler-handle');
+			el.createDiv('fleur-ink-ruler-grip');
 			root.appendChild(el);
 			this.rulerEl = el;
 			this.rulerScaleKey = '';
@@ -875,21 +876,26 @@ export class InkOverlayEngine {
 	}
 
 	/**
-	 * 直尺上的 pointerdown（document capture 先于一切 —— 这是本功能唯一的
-	 * 输入陷阱：不在这里短路，拖尺身的笔/手指就会先被当成落墨手势）。
+	 * 直尺上的 pointerdown（document capture 先于一切）。
+	 * 拖拽把关：只有旋转钮 / 两端长短区 / 中央挪移把手吃掉事件；
+	 * **尺身其余地方一律放行** —— 尺身上可以直接书写（Apple Notes 语义，
+	 * 用户 2026-10-17 定规），笔尖落尺即贴工作边投影，所见即所得。
 	 * 返回 true 表示事件已被直尺吃掉。
 	 */
 	private handleRulerDown(e: PointerEvent): boolean {
 		const t = e.target as Element | null;
 		if (!t || !this.rulerEl || !t.closest?.('.fleur-ink-ruler')) return false;
-		// 命中顺序：旋转钮 → 两端长短拖拽区 → 尺身平移
-		const mode: 'move' | 'rotate' | RulerResizeMode = t.closest?.('.fleur-ink-ruler-handle')
+		// 命中顺序：旋转钮 → 两端长短拖拽区 → 中央挪移把手；尺身放行去落墨
+		const mode: 'move' | 'rotate' | RulerResizeMode | null = t.closest?.('.fleur-ink-ruler-handle')
 			? 'rotate'
 			: t.closest?.('.fleur-ink-ruler-end-l')
 				? 'resize-l'
 				: t.closest?.('.fleur-ink-ruler-end-r')
 					? 'resize-r'
-					: 'move';
+					: t.closest?.('.fleur-ink-ruler-grip')
+						? 'move'
+						: null;
+		if (!mode) return false;
 		this.rulerDrag = {
 			mode,
 			pointerId: e.pointerId,
@@ -1269,6 +1275,18 @@ export class InkOverlayEngine {
 	private surfaceOfEvent(e: Event): Surface | null {
 		const t = e.target as Element | null;
 		if (!t) return null;
+		// 尺身上书写（尺身已放行去落墨）：尺 z5 压着墨层 canvas，elementFromPoint
+		// 拿不到底下的页，只能按坐标找包含该点的页
+		if (t.closest?.('.fleur-ink-ruler')) {
+			const pe = e as PointerEvent;
+			for (const sf of this.surfaces.values()) {
+				const r = sf.el.getBoundingClientRect();
+				if (pe.clientX >= r.left && pe.clientX <= r.right && pe.clientY >= r.top && pe.clientY <= r.bottom) {
+					return sf;
+				}
+			}
+			return null;
+		}
 		const onCanvas =
 			t instanceof HTMLCanvasElement && t.hasClass('fleur-ink-canvas') && !t.hasClass('is-draft');
 		if (!onCanvas) {
