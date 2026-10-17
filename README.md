@@ -122,7 +122,8 @@ Stylus ink is rendered on the plugin's own overlay canvases and persisted in a s
   opposite side via the *Ruler side* setting): a stroke drawn
   across the ruler straightens along that working edge, and the ink is nudged fully to the ruler's
   outer side with a hairline gap, so the
-  body never covers it and nothing shows through the fully opaque body. Works with pen and highlighter; strokes away from the ruler
+  body never covers it; the body is opaque except for a hairline slit at the working edge, so a stroke
+  passing the ruler shows as a thin line there. Works with pen and highlighter; strokes away from the ruler
   are unaffected. Toggle the icon again to hide it. The ruler is session-only (not a setting) and the
   resulting straight strokes are ordinary ink — undo, eraser, sync and export all behave as usual.
 - **Stroke-break / lag diagnostics** (command palette → 「手写断触诊断」, mobile only): a passive,
@@ -356,11 +357,12 @@ PDF、每次批注落盘、检测到副本变更；编辑冲突按修改时刻�
   「流畅」（约减六成），通常会立刻跟手。它**只改显示分辨率**：笔迹数据、坐标、命中测试、导出一律
   不受影响，随时改回「原始」即可恢复最锐利的笔迹。
 - **直尺**（笔盒 → 直尺图标，Apple Notes 式）：点按在页面上放一把带厘米刻度的磨砂白直尺（尺身
-  全不透明，底下的旧笔迹不会透出来），默认长 10 厘米（按当前缩放换算，尺面铺满 0–10 刻度）——
+  不透明，底下的旧笔迹不会大片透出来；只有工作边留一条 3px 透明缝，经过尺沿的墨在缝里露出
+  一线，划没划线看得见），默认长 10 厘米（按当前缩放换算，尺面铺满 0–10 刻度）——
   拖尺身移动、拖右端圆钮旋转、拖左右两端调长短（另一端锚定），直尺图标旁会出现「恢复水平」
   按钮一键扳平；设置里可用「直尺朝向」选择尺子在笔画下方（默认）还是上方。书写逻辑与
   Apple Notes 对齐：尺子躺在要画的线的对面，工作边朝向笔画——划线经过尺子就沿工作边被拉直，
-  且整条墨落在尺子外侧，只留一道小缝贴着尺沿，尺身不遮墨也不透墨。钢笔 / 荧光笔都可用，离尺
+  且整条墨落在尺子外侧，只留一道小缝贴着尺沿，尺身不遮墨。钢笔 / 荧光笔都可用，离尺
   较远的笔迹不受影响。再点一次图标即收起。直尺是会话内的（不进设置），画出的直线就是普通笔迹 ——
   撤销、橡皮、同步、导出一律按普通笔迹处理。
 - **断触 / 卡顿诊断**（命令面板 → 「手写断触诊断」，仅移动端）：一个被命令开关的被动记录器，
