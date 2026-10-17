@@ -1,3 +1,9 @@
+1.9.1 — 社区审核 lint 合规修复（零功能变化）
+
+- `no-static-styles-assignment`：直尺宿主的 `position: relative` 写入与卸载恢复、直尺刻度层的四条 background（image / size / repeat / position）由直写 `el.style.*` 改走 Obsidian 推荐的 `setCssStyles`。行为完全一致（同一份行内样式），深浅色主题、直尺拖拽/旋转/刻度渲染均不受影响。
+
+隐私：本版本没有新增任何数据采集、日志或网络行为。
+
 1.9.0 — 笔盒形状工具：矩形 / 圆形 / 直线 + 画后选中拖移
 
 - 笔盒新增「形状」工具：拖拽画出矩形、圆形或直线，形状三选一在弹层里切换；直线模式下填充色板自动隐藏
