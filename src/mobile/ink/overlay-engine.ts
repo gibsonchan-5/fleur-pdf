@@ -60,8 +60,11 @@ import {
 	RULER_DEFAULT_CM,
 	RULER_DEFAULT_WIDTH,
 	rulerEdgeLine,
+	RULER_MAX_HALF_WIDTH,
 	type RulerResizeMode,
+	type RulerSide,
 	type RulerState,
+	RULER_STROKE_GAP_PX,
 	shiftEdgeOutward,
 } from './ruler';
 
@@ -440,6 +443,8 @@ export class InkOverlayEngine {
 	/** 刻度层重建缓存键（`${scale}|${length}`）：拖移/旋转逐帧调用也不重建 DOM。 */
 	private rulerScaleKey = '';
 	private rulerHostPrevPos = '';
+	/** 尺子朝向（用户设置）：'below'=尺在笔画下方（工作边上缘，默认）；'above'=尺在上方。 */
+	private rulerSide: RulerSide = 'below';
 
 	constructor(app: App) {
 		this.app = app;
@@ -701,6 +706,21 @@ export class InkOverlayEngine {
 		this.applyRulerTransform();
 	}
 
+	/**
+	 * 设置尺子朝向（用户偏好）：'below'=尺在笔画下方（工作边上缘，默认），
+	 * 'above'=尺在笔画上方（工作边下缘）。即时更新已挂载尺的边线/刻度位置。
+	 */
+	setRulerSide(side: RulerSide): void {
+		this.rulerSide = side;
+		const el = this.rulerEl;
+		if (el) {
+			el.toggleClass?.('is-side-above', side === 'above');
+			el.toggleClass?.('is-side-below', side === 'below');
+			this.rulerScaleKey = ''; // 强制重画刻度（锚点随朝向变）
+			this.renderRulerScale();
+		}
+	}
+
 	/** viewer 根元素的包围盒（直尺坐标系与页面坐标互转的基准）。 */
 	private rootRect(): DOMRect | null {
 		const root: HTMLElement | undefined = this.viewer?.viewer;
@@ -756,6 +776,7 @@ export class InkOverlayEngine {
 		if (!this.rulerEl || !this.rulerEl.isConnected) {
 			const el = document.createElement('div');
 			el.addClass('fleur-ink-ruler');
+			el.addClass(this.rulerSide === 'above' ? 'is-side-above' : 'is-side-below');
 			// 刻度层（渐变刻度 + 厘米数字）→ 功能边线 → 两端长短拖拽区 → 旋转钮。
 			// 尺身本体即根元素（半透明磨砂），不再单挂 -body。
 			el.createDiv('fleur-ink-ruler-scale');
@@ -840,8 +861,8 @@ export class InkOverlayEngine {
 		scaleEl.style.backgroundImage = layers.join(', ');
 		scaleEl.style.backgroundSize = sizes.join(', ');
 		scaleEl.style.backgroundRepeat = 'repeat-x';
-		// 锚在上缘：刻度从尺子上边缘向下生长（工作边在上缘，线在其上、尺身在其下）
-		scaleEl.style.backgroundPosition = '0 0';
+		// 刻度锚在工作边那一侧：'below'（上缘）向下生长、'above'（下缘）向上生长
+		scaleEl.style.backgroundPosition = this.rulerSide === 'above' ? '0 100%' : '0 0';
 		scaleEl.textContent = '';
 		// +1e-6：尺长恰为整厘米时（10×cm）防浮点把最后一个数字 floor 掉
 		const n = Math.floor(r.length / cm + 1e-6);
@@ -927,13 +948,16 @@ export class InkOverlayEngine {
 		const rootRect = this.rootRect();
 		if (!rootRect) return null;
 		const root = pageCssToRoot(css, rect, rootRect);
-		const line = rulerEdgeLine(r);
+		const line = rulerEdgeLine(r, this.rulerSide);
 		if (!g.rulerSnapped) {
 			if (!nearEdge(line, root.x, root.y, undefined, r.width)) return null;
 			g.rulerSnapped = true;
 		}
-		const half = g.tool.mode === 'pen' ? g.tool.width / 2 : 0;
-		const q = projectToEdge(half > 0 ? shiftEdgeOutward(line, half) : line, root.x, root.y);
+		// 外移「最大半笔宽 + 极小缝」：笔迹随压感最宽 1.2×width（半宽 0.6×width），
+		// 外移够多才能让整条墨完全落在尺子外、不压进半透明尺身透出残笔，只留小缝。
+		const offset =
+			g.tool.mode === 'pen' ? g.tool.width * RULER_MAX_HALF_WIDTH + RULER_STROKE_GAP_PX : 0;
+		const q = projectToEdge(offset > 0 ? shiftEdgeOutward(line, offset) : line, root.x, root.y);
 		const pageCss = rootToPageCss(q, rect, rootRect);
 		if (
 			pageCss.x < 0 ||

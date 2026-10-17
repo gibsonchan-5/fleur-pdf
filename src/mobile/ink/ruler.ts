@@ -1,10 +1,12 @@
 // 直尺（参考 Apple Notes）：几何纯函数。
 //
-// 交互（Apple Notes 语义，用户真机两轮截图校准）：
+// 交互（Apple Notes 语义，用户真机多轮截图校准）：
 //   · 可拖动 + 可旋转（拖尺身移动、拖右端手柄旋转、拖两端调长短）；
-//   · 尺子躺在要画的线**下方**，工作边是尺身「上缘」（刻度沿上缘生长）。划线经过
-//     尺子（落在上缘外侧感应带或尺身上）就沿上缘变直。投影目标线上移半个笔宽，
-//     让整条拉直的墨落在尺子上方 —— 尺身在线之下，既不遮墨也不透残笔。
+//   · 尺子朝向可选（设置 rulerSide）：默认尺子躺在笔画**下方**（工作边=上缘），
+//     也可选尺子在笔画**上方**（工作边=下缘）。划线经过尺子即沿工作边变直。
+//   · 投影沿外法线外移「最大半笔宽 + 极小缝」：笔迹随压感最宽到 1.2×width，
+//     半宽 0.6×width —— 外移够多才能让整条墨完全落在尺子外、不被半透明尺身透出，
+//     同时只留 RULER_STROKE_GAP_PX 的小缝让用户看清贴着尺沿的线。
 //
 // 坐标系约定：直尺状态存放在 pdf.js viewer 根元素（.pdfViewer）的 CSS 像素
 // 坐标系里 —— 尺 DOM 挂在根元素上随内容滚动；页面 surface 的 CSS 坐标与
@@ -13,8 +15,17 @@
 //
 // 纯函数无 DOM 依赖，可无头测试（scripts/test-ink-ruler.mjs）。
 
-/** 贴尺感应带：上缘外侧宽度（CSS px）。 */
+/** 贴尺感应带：工作边外侧宽度（CSS px）。 */
 export const RULER_SNAP_BAND_PX = 24;
+
+/** 吸附后笔迹与工作边之间留的极小缝（CSS px）—— 看得见贴着尺沿，又不压进尺身。 */
+export const RULER_STROKE_GAP_PX = 2;
+
+/** 尺子相对笔画的朝向：'below'=尺在笔画下方（工作边上缘）；'above'=尺在上方（工作边下缘）。 */
+export type RulerSide = 'above' | 'below';
+
+/** 笔迹随压感的最大半宽系数：raw = width·(0.4+0.8·p)，p=1 → 1.2·width，半宽 0.6·width。 */
+export const RULER_MAX_HALF_WIDTH = 0.6;
 
 /** 直尺状态（viewer 根元素 CSS 坐标系）。x/y 为尺中心。 */
 export interface RulerState {
@@ -26,12 +37,17 @@ export interface RulerState {
 	width: number;
 }
 
-/** 尺沿（工作边）所在直线：过点 (ex, ey)、单位方向向量 (dx, dy)。 */
+/**
+ * 尺沿（工作边）所在直线：过点 (ex, ey)、单位方向 (dx, dy)、单位外法线 (nx, ny)。
+ * 外法线指向「书写侧」（尺子外侧），感应带与投影偏移都沿它计算。
+ */
 export interface EdgeLine {
 	ex: number;
 	ey: number;
 	dx: number;
 	dy: number;
+	nx: number;
+	ny: number;
 }
 
 /** 1 厘米 = 28.3465 PDF pt（72pt/in ÷ 2.54cm/in）。 */
@@ -42,18 +58,23 @@ export const RULER_DEFAULT_CM = 10;
 export const RULER_DEFAULT_WIDTH = 46;
 
 /**
- * 尺沿直线。工作边取尺身「上缘」：中心沿外法线 n = (dy, −dx) 偏移 width/2 ——
- * angle=0（水平）时 n = (0,−1) 指向屏幕上方，即尺子的上边缘（划线贴这条边变直，
- * 尺身躺在其下方）。旋转后跟随尺身，永远是同一条被高亮的边。
+ * 尺沿直线。工作边随 side 取尺身的一侧：
+ *   'below'（尺在笔画下方）→ 上缘，外法线 n=(dy,−dx)（angle=0 时朝上）；
+ *   'above'（尺在笔画上方）→ 下缘，外法线 n=(−dy,dx)（angle=0 时朝下）。
+ * 外法线永远指向书写侧（远离尺身），感应带与投影偏移都沿它算。
  */
-export function rulerEdgeLine(r: RulerState): EdgeLine {
+export function rulerEdgeLine(r: RulerState, side: RulerSide = 'below'): EdgeLine {
 	const dx = Math.cos(r.angle);
 	const dy = Math.sin(r.angle);
+	const nx = side === 'below' ? dy : -dy;
+	const ny = side === 'below' ? -dx : dx;
 	return {
-		ex: r.x + (dy * r.width) / 2,
-		ey: r.y + (-dx * r.width) / 2,
+		ex: r.x + nx * (r.width / 2),
+		ey: r.y + ny * (r.width / 2),
 		dx,
 		dy,
+		nx,
+		ny,
 	};
 }
 
@@ -64,17 +85,16 @@ export function distanceToEdge(line: EdgeLine, px: number, py: number): number {
 }
 
 /**
- * 点到尺沿的**有符号**侧距（CSS px）：沿外法线 n = (dy, −dx) 为正。
- * angle=0 时 n 指向上方 —— s > 0 即点在尺沿外侧（尺子上方的纸面，正常书写侧），
- * −width ≤ s < 0 即点落在尺身上（划线经过尺子），s < −width 即尺子下方（不吸附）。
+ * 点到尺沿的**有符号**侧距（CSS px）：沿外法线 n 为正（书写侧），负为尺身内。
+ * −width ≤ s < 0 即点落在尺身上（划线经过尺子），s < −width 即尺子另一侧（不吸附）。
  */
 export function edgeSide(line: EdgeLine, px: number, py: number): number {
-	return (px - line.ex) * line.dy - (py - line.ey) * line.dx;
+	return (px - line.ex) * line.nx + (py - line.ey) * line.ny;
 }
 
-/** 把尺沿直线整体沿外法线方向外移 dist（投影目标线：让整条墨落在尺子上方，不被尺身遮/透）。 */
+/** 把尺沿直线整体沿外法线外移 dist（投影目标线：让整条墨落在尺子外、只留极小缝）。 */
 export function shiftEdgeOutward(line: EdgeLine, dist: number): EdgeLine {
-	return { ex: line.ex + line.dy * dist, ey: line.ey - line.dx * dist, dx: line.dx, dy: line.dy };
+	return { ex: line.ex + line.nx * dist, ey: line.ey + line.ny * dist, dx: line.dx, dy: line.dy, nx: line.nx, ny: line.ny };
 }
 
 /** 点在尺沿上的垂足投影。 */

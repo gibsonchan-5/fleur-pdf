@@ -123,6 +123,11 @@ export interface FleurSettings {
   /** 橡皮擦除模式：pixel=像素擦除（切开口保留盘外线段） stroke=笔画擦除 select=选区擦除。 */
   inkEraserMode?: 'pixel' | 'stroke' | 'select';
   /**
+   * 直尺朝向（手写批注）：'below'=尺子躺在笔画**下方**、贴上缘变直（默认，Apple Notes 常见姿势）；
+   * 'above'=尺子在笔画**上方**、贴下缘变直。只影响吸附时以哪条边为工作边与墨落在尺子哪一侧。
+   */
+  rulerSide?: 'above' | 'below';
+  /**
    * 抬笔归并判定（治小米平板「写成了连笔」，只管移动端手写批注）。
    *
    * true（默认）= 笔抬起后重新落下时，按抬笔前的末端速度、方向、悬停轨迹这些
@@ -1012,6 +1017,20 @@ export class FleurSettingTab extends PluginSettingTab {
         .onChange(async (value) => {
           this.plugin.settings.inkEraserMode = value as 'pixel' | 'stroke' | 'select';
           await this.plugin.saveSettings();
+        }));
+
+    new Setting(inkSection)
+      .setName('直尺朝向')
+      .setDesc('尺子躺在笔画的哪一侧。默认「笔画上方」＝尺在下方、笔贴上缘变直（Apple Notes 常见姿势）；改「笔画下方」＝尺压在上方、贴下缘变直。只影响直尺吸附，随时可切换。')
+      .addDropdown(dropdown => dropdown
+        .addOption('below', '笔画上方（尺在下方）')
+        .addOption('above', '笔画下方（尺在上方）')
+        .setValue(this.plugin.settings.rulerSide ?? 'below')
+        .onChange(async (value) => {
+          this.plugin.settings.rulerSide = value as 'above' | 'below';
+          await this.plugin.saveSettings();
+          // 已开的手写模式即时生效
+          this.plugin.inkUI?.setRulerSide?.(this.plugin.settings.rulerSide ?? 'below');
         }));
 
     new Setting(inkSection)

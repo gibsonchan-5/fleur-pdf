@@ -345,6 +345,11 @@ export class InkUI {
 		this.overlay.setRenderScale(s.inkRenderScale);
 	}
 
+	/** 设置面板改「直尺朝向」时即时转发给覆盖层引擎。 */
+	setRulerSide(side: 'above' | 'below'): void {
+		this.overlay.setRulerSide(side);
+	}
+
 	async enterInk(): Promise<void> {
 		// 手写模式下选不出文本，文本批注面板留着只会挡住落笔区域
 		this.plugin.patcher?.closeFloatingMenu();
@@ -363,6 +368,8 @@ export class InkUI {
 		this.overlay.attach(handle.viewer);
 		this.applyInkTuning();
 		this.overlay.setTool(this.currentTool());
+		// 尺子朝向取自设置（'below' 默认＝尺在笔画下方、贴上缘变直）
+		this.overlay.setRulerSide(this.plugin.settings.rulerSide ?? 'below');
 		// 会话内开过直尺 → 恢复（位姿沿用引擎里记的上次状态）
 		if (this.rulerOn) this.overlay.setRulerVisible(true);
 		this.overlay.onChange(() => {

@@ -2206,7 +2206,8 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   pointer-events: none;
   user-select: none;
 }
-/* 功能边（贴尺感应的工作边 = 尺身上缘，线在其上、尺身在其下）：降饱和 accent 细线 */
+/* 功能边（贴尺感应的工作边）：默认上缘（is-side-below，尺在笔画下方）；
+   is-side-above 时翻到下缘（尺在笔画上方）。降饱和 accent 细线。 */
 .fleur-ink-ruler-edge {
   position: absolute;
   left: 2px;
@@ -2216,6 +2217,14 @@ body.fleur-pdf-mobile .fleur-sidebar-card-type svg {
   border-radius: 1px;
   background: color-mix(in srgb, var(--interactive-accent) 65%, transparent);
   pointer-events: none;
+}
+.fleur-ink-ruler.is-side-above .fleur-ink-ruler-edge {
+  top: auto;
+  bottom: -1px;
+}
+.fleur-ink-ruler.is-side-above .fleur-ink-ruler-scale span {
+  top: auto;
+  bottom: 16px;
 }
 /* 两端长短拖拽区：锚定另一端，夹取 120–900px */
 .fleur-ink-ruler-end-l,
