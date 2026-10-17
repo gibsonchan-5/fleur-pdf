@@ -15,7 +15,7 @@ import { Notice, setIcon } from 'obsidian';
 import type FleurPDFPlugin from '../main';
 import type { InkEngine, PenSpec } from './ink-engine';
 import { InkOverlayEngine, type InkTool } from './ink/overlay-engine';
-import { v1EntryToStroke, type InkStroke } from './ink/strokes';
+import { v1EntryToStroke, INK_SHAPE_DEFAULT_FILL, type InkStroke, type InkStrokeShape } from './ink/strokes';
 import { InkStore } from './ink-store';
 import { openSnapResult } from './snap-result';
 
@@ -34,6 +34,21 @@ export const DEFAULT_PENS: PenSpec[] = [
 const PEN_COLORS = ['#1f1f1f', '#D4A017', '#2979C4', '#D32F2F', '#2E7D32'];
 /** 荧光笔可选色（0.3.0 起整体加深一档，浅色正文上立得住）。 */
 const MARKER_COLORS = ['#f2c200', '#5fc93f', '#2f9fe0', '#ee5f86', '#a06edb'];
+
+/** 形状填充色板（首格荧光黄 = 默认；半透明由渲染端按荧光笔语义统一压）。 */
+const SHAPE_FILL_COLORS = ['#ffe94a', '#7ee787', '#79c0ff', '#ffa657', '#ff9bce'];
+
+/** 形状种类 → 图标 / 无障碍名。 */
+const SHAPE_ICON: Record<InkStrokeShape, string> = {
+	rect: 'square',
+	ellipse: 'circle',
+	line: 'slash',
+};
+const SHAPE_LABEL: Record<InkStrokeShape, string> = {
+	rect: '矩形',
+	ellipse: '圆形',
+	line: '直线',
+};
 
 /**
  * 笔触大小滑块的取值范围 [min, max, step]（PDF 用户空间单位）。
@@ -116,6 +131,16 @@ export class InkUI {
 
 	/** 局部截图模式（相机按钮）：开启后引擎工具切到 snap，完成后自动退出。 */
 	private snapMode = false;
+	/**
+	 * 形状模式（形状按钮）：临时工具不占 pens 槽位，与相机同款。
+	 * 形状 / 填充 / 颜色 / 粗细是形状工具自己的会话记忆（不进设置、重启即忘，
+	 * 与直尺开合同一策略）。
+	 */
+	private shapeMode = false;
+	private shapeKind: InkStrokeShape = 'rect';
+	private shapeFill: string | null = INK_SHAPE_DEFAULT_FILL;
+	private shapeColor = '#1f1f1f';
+	private shapeWidth = 3;
 	/**
 	 * 直尺开合（会话内存：不进设置、退出 Obsidian 即忘，与 Apple Notes 一致）。
 	 * 位置与角度的记忆在引擎（ruler 状态跨 attach/detach 存活），这里只记开合。
@@ -367,6 +392,7 @@ export class InkUI {
 		// 不再需要 pdf.js 的编辑模式与 UIManager：这两层正是旧架构一切顽疾的来源。
 		this.overlay.attach(handle.viewer);
 		this.applyInkTuning();
+		this.shapeMode = false; // 临时模式不跨进出手写会话，进来永远是普通笔
 		this.overlay.setTool(this.currentTool());
 		// 尺子朝向取自设置（'below' 默认＝尺在笔画下方、贴上缘变直）
 		this.overlay.setRulerSide(this.plugin.settings.rulerSide ?? 'below');
@@ -723,8 +749,20 @@ export class InkUI {
 	/** 当前笔（含擦除模式的选区映射）下发给引擎。 */
 	private applyTool(): void {
 		if (!this.active) return;
-		// 截图模式优先：相机是临时工具，不占用 pens 槽位
-		this.overlay.setTool(this.snapMode ? { mode: 'snap' } : this.currentTool());
+		// 截图 / 形状模式优先：临时工具不占 pens 槽位
+		if (this.snapMode) {
+			this.overlay.setTool({ mode: 'snap' });
+		} else if (this.shapeMode) {
+			this.overlay.setTool({
+				mode: 'shape',
+				shape: this.shapeKind,
+				color: this.shapeColor,
+				width: this.shapeWidth,
+				fill: this.shapeFill,
+			});
+		} else {
+			this.overlay.setTool(this.currentTool());
+		}
 	}
 
 	/** 截图完成：渲染 + 打开结果面板，随后自动退出截图模式。 */
@@ -745,6 +783,7 @@ export class InkUI {
 		// 记录「点的就是当前已选中的那支」——橡皮要靠它判断是否展开设置弹层
 		const wasSame = this.penIndex === i;
 		this.snapMode = false; // 选笔即退出截图模式
+		this.shapeMode = false; // 选笔即退出形状模式
 		this.penIndex = i;
 		this.applyTool();
 		this.persist();
@@ -762,8 +801,40 @@ export class InkUI {
 		pop.toggleClass('is-open', willOpen);
 	}
 
+	/** 展开形状弹层（形状三选 + 填充色板）。 */
+	private openShapePop(): void {
+		const pop = this.penBar?.querySelector<HTMLElement>('.fleur-pdf-ink-shape-pop');
+		if (!pop) return;
+		const willOpen = !pop.hasClass('is-open');
+		this.closePops(pop);
+		pop.toggleClass('is-open', willOpen);
+	}
+
+	/** 切形状（弹层内点选：就地更新高亮 + 下发引擎，不重建笔盒）。 */
+	private setShapeKind(kind: InkStrokeShape): void {
+		this.shapeKind = kind;
+		this.applyTool();
+		this.penBar
+			?.findAll('.fleur-pdf-ink-shape-pop .fleur-pdf-ink-shape-opt')
+			.forEach((el) => el.toggleClass('is-active', el.getAttribute('data-shape') === kind));
+	}
+
+	/** 切填充色（含「无填充」= null）。 */
+	private setShapeFill(fill: string | null): void {
+		this.shapeFill = fill;
+		this.applyTool();
+		this.penBar
+			?.findAll('.fleur-pdf-ink-shape-pop .fleur-pdf-ink-fill')
+			.forEach((el) => el.toggleClass('is-active', (el.getAttribute('data-fill') ?? null) === fill));
+	}
+
 	private setColor(color: string): void {
-		this.pens[this.penIndex].color = color;
+		if (this.shapeMode) {
+			// 形状模式下调色盘改的是形状描边色，不动当前笔
+			this.shapeColor = color;
+		} else {
+			this.pens[this.penIndex].color = color;
+		}
 		this.applyTool();
 		this.persist();
 		this.refreshPenBar();
@@ -817,7 +888,7 @@ export class InkUI {
 			const btn = penGroup.createDiv('fleur-pdf-ink-btn');
 			setIcon(btn, PEN_ICON[pen.kind]);
 			btn.setAttribute('aria-label', PEN_LABEL[pen.kind]);
-			if (i === this.penIndex && !this.snapMode) btn.addClass('is-active');
+			if (i === this.penIndex && !this.snapMode && !this.shapeMode) btn.addClass('is-active');
 			btn.addEventListener('click', (e) => {
 				e.stopPropagation();
 				void this.selectPen(i);
@@ -836,13 +907,38 @@ export class InkUI {
 			this.refreshPenBar();
 		});
 
+		// ── 形状（矩形/圆/直线）：临时工具，弹层选形状与填充色 ──
+		const shapeBtn = penGroup.createDiv('fleur-pdf-ink-btn');
+		setIcon(shapeBtn, 'shapes');
+		shapeBtn.setAttribute('aria-label', '形状（矩形 / 圆形 / 直线；矩形圆可选填充色，默认荧光黄）');
+		if (this.shapeMode) shapeBtn.addClass('is-active');
+		shapeBtn.addEventListener('click', (e) => {
+			e.stopPropagation();
+			if (this.shapeMode) {
+				// 已在形状模式：再点开弹层（与橡皮「再点开设置」同一交互）
+				this.openShapePop();
+			} else {
+				this.snapMode = false;
+				this.shapeMode = true;
+				this.applyTool();
+				this.refreshPenBar();
+				this.openShapePop(); // 首次进入顺手展开，选完即画
+			}
+		});
+
 		// ── 颜色 ──
 		const colorBtn = bar.createDiv('fleur-pdf-ink-btn');
 		setIcon(colorBtn, 'palette');
 		colorBtn.setAttribute('aria-label', '颜色');
 		const curKind = this.pens[this.penIndex].kind;
+		// 形状模式下调色盘服务形状描边色；色点跟形状描边走
+		const curColor = this.shapeMode
+			? this.shapeColor
+			: curKind === 'eraser' || curKind === 'lasso'
+				? ''
+				: this.pens[this.penIndex].color;
 		colorBtn.createDiv('fleur-pdf-ink-swatch').setCssStyles({
-			background: curKind === 'eraser' || curKind === 'lasso' ? 'transparent' : this.pens[this.penIndex].color,
+			background: curColor === '' ? 'transparent' : curColor,
 		});
 		const colorPop = this.buildColorPop();
 		bar.appendChild(colorPop);
@@ -852,9 +948,9 @@ export class InkUI {
 			colorPop.toggleClass('is-open', !colorPop.hasClass('is-open'));
 		});
 
-		// ── 大小（钢笔 / 荧光笔）或橡皮设置 ──
+		// ── 大小（钢笔 / 荧光笔 / 形状描边）或橡皮设置 ──
 		const pen = this.pens[this.penIndex];
-		if (pen.kind !== 'eraser') {
+		if (pen.kind !== 'eraser' || this.shapeMode) {
 			const sizeBtn = bar.createDiv('fleur-pdf-ink-btn');
 			setIcon(sizeBtn, 'circle-dot');
 			sizeBtn.setAttribute('aria-label', '粗细');
@@ -869,6 +965,9 @@ export class InkUI {
 			// 橡皮设置弹层（擦除模式 + 大小）常驻笔盒，由「再次点击橡皮图标」展开
 			bar.appendChild(this.buildEraserPop());
 		}
+
+		// 形状弹层常驻笔盒（形状模式中「再点形状图标」展开）
+		bar.appendChild(this.buildShapePop());
 
 		// ── 直尺：贴着尺子上缘书写自动变直（可拖动 / 旋转 / 调长短，Apple Notes 式）──
 		const rulerBtn = bar.createDiv('fleur-pdf-ink-btn');
@@ -967,7 +1066,7 @@ export class InkUI {
 		this.penBar = bar;
 		const pen = this.pens[this.penIndex];
 		const btn = bar.createDiv('fleur-pdf-ink-collapsed-btn');
-		setIcon(btn, this.snapMode ? 'camera' : PEN_ICON[pen.kind]);
+		setIcon(btn, this.snapMode ? 'camera' : this.shapeMode ? 'shapes' : PEN_ICON[pen.kind]);
 		btn.setAttribute('aria-label', '展开笔盒');
 		if (pen.kind !== 'eraser' && pen.kind !== 'lasso') {
 			btn.createDiv('fleur-pdf-ink-cdot').setCssStyles({ background: pen.color });
@@ -1121,11 +1220,12 @@ export class InkUI {
 	private buildColorPop(): HTMLElement {
 		const pop = createDiv('fleur-pdf-ink-pop fleur-pdf-ink-colors');
 		const isMarker = this.pens[this.penIndex].kind === 'marker';
-		const colors = isMarker ? MARKER_COLORS : PEN_COLORS;
+		const colors = isMarker && !this.shapeMode ? MARKER_COLORS : PEN_COLORS;
+		const curColor = this.shapeMode ? this.shapeColor : this.pens[this.penIndex].color;
 		for (const c of colors) {
 			const dot = pop.createDiv('fleur-pdf-ink-color');
 			dot.setCssStyles({ background: c });
-			if (c === this.pens[this.penIndex].color) dot.addClass('is-active');
+			if (c === curColor) dot.addClass('is-active');
 			dot.addEventListener('click', (e) => {
 				e.stopPropagation();
 				this.setColor(c);
@@ -1142,17 +1242,19 @@ export class InkUI {
 	private buildSizeSlider(): HTMLElement {
 		const pen = this.pens[this.penIndex];
 		const [min, max, step] = SIZE_RANGE[pen.kind];
+		// 形状模式：滑块调形状描边宽度（与钢笔同档位），不写 pen 槽位
+		const shapeMode = this.shapeMode;
 		const row = createDiv('fleur-pdf-ink-slider-row');
 
 		const input = row.createEl('input', { cls: 'fleur-pdf-ink-slider' });
 		input.type = 'range';
-		input.min = String(min);
-		input.max = String(max);
-		input.step = String(step);
-		input.value = String(pen.thickness);
+		input.min = String(shapeMode ? 1 : min);
+		input.max = String(shapeMode ? 12 : max);
+		input.step = String(shapeMode ? 0.5 : step);
+		input.value = String(shapeMode ? this.shapeWidth : pen.thickness);
 
 		const value = row.createDiv('fleur-pdf-ink-slider-val');
-		value.setText(String(pen.thickness));
+		value.setText(String(shapeMode ? this.shapeWidth : pen.thickness));
 
 		// 滑块自己吃掉指针事件，避免冒泡到 body 的「点空白收起面板」逻辑
 		for (const ev of ['pointerdown', 'touchstart', 'click']) {
@@ -1161,7 +1263,11 @@ export class InkUI {
 
 		input.addEventListener('input', () => {
 			const v = Number(input.value);
-			this.pens[this.penIndex].thickness = v;
+			if (shapeMode) {
+				this.shapeWidth = v;
+			} else {
+				this.pens[this.penIndex].thickness = v;
+			}
 			value.setText(String(v));
 			this.applyTool();
 		});
@@ -1194,6 +1300,43 @@ export class InkUI {
 			});
 		}
 		pop.appendChild(this.buildSizeSlider());
+		return pop;
+	}
+
+	/** 形状弹层：形状三选一行 + 填充色板一行（末格「无填充」）。 */
+	private buildShapePop(): HTMLElement {
+		const pop = createDiv('fleur-pdf-ink-pop fleur-pdf-ink-shape-pop');
+		const row = pop.createDiv('fleur-pdf-ink-modes');
+		for (const shape of ['rect', 'ellipse', 'line'] as const) {
+			const opt = row.createDiv('fleur-pdf-ink-shape-opt');
+			opt.setAttribute('data-shape', shape);
+			setIcon(opt, SHAPE_ICON[shape]);
+			opt.setAttribute('aria-label', SHAPE_LABEL[shape]);
+			if (shape === this.shapeKind) opt.addClass('is-active');
+			opt.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.setShapeKind(shape);
+			});
+		}
+		const fills = pop.createDiv('fleur-pdf-ink-colors');
+		for (const c of SHAPE_FILL_COLORS) {
+			const dot = fills.createDiv('fleur-pdf-ink-color fleur-pdf-ink-fill');
+			dot.setAttribute('data-fill', c);
+			dot.setCssStyles({ background: c });
+			if (c === this.shapeFill) dot.addClass('is-active');
+			dot.addEventListener('click', (e) => {
+				e.stopPropagation();
+				this.setShapeFill(c);
+			});
+		}
+		// 「无填充」：斜杠圆环占位（只在描边，不填色）
+		const none = fills.createDiv('fleur-pdf-ink-color fleur-pdf-ink-fill is-none');
+		none.setAttribute('aria-label', '无填充');
+		if (this.shapeFill === null) none.addClass('is-active');
+		none.addEventListener('click', (e) => {
+			e.stopPropagation();
+			this.setShapeFill(null);
+		});
 		return pop;
 	}
 

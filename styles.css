@@ -2006,6 +2006,42 @@ body.fleur-pdf-mobile .fleur-pdf-ink-eraser-pop .fleur-pdf-ink-modes {
   justify-content: center;
 }
 
+/* ── 形状弹层：形状三选一行 + 填充色板一行 ── */
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-pop {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-pop .fleur-pdf-ink-modes {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+}
+
+/* 形状选项：图标胶囊（与橡皮的模式胶囊同尺寸语言） */
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-opt {
+  width: 44px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  color: var(--text-muted);
+}
+
+body.fleur-pdf-mobile .fleur-pdf-ink-shape-opt.is-active {
+  color: var(--text-normal);
+  background-color: var(--background-modifier-hover);
+}
+
+/* 「无填充」占位：斜杠圆环，只在描边不填色 */
+body.fleur-pdf-mobile .fleur-pdf-ink-color.is-none {
+  background:
+    linear-gradient(45deg, transparent 44%, var(--text-muted) 44% 56%, transparent 56%),
+    var(--background-primary);
+}
+
 /* ── 移动端：批注浮动菜单按触摸尺寸放大 ──
    桌面端 28px 的按钮在平板上点不准（真机反馈）；移动端整体放大到 40px 命中区，
    并给容器加横向滚动兜住小屏（按钮变多时不会溢出屏幕）。

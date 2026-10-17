@@ -24,6 +24,115 @@ export function mintStrokeId(): string {
 /** 笔的种类。marker（荧光笔）走整条路径单次描边 + 半透明；pen 走逐段圆头增量。 */
 export type InkStrokeKind = 'pen' | 'marker';
 
+/** 形状工具的形状。shape 笔迹的 pts 恒为 2 个点（对角两点 / 直线两端点）。 */
+export type InkStrokeShape = 'rect' | 'ellipse' | 'line';
+
+export const INK_SHAPES: readonly InkStrokeShape[] = ['rect', 'ellipse', 'line'];
+
+/** 形状值守卫（sanitize / 读盘用）。 */
+export function isInkShape(v: unknown): v is InkStrokeShape {
+	return v === 'rect' || v === 'ellipse' || v === 'line';
+}
+
+/** 形状填充的透明度（荧光笔语义：下方正文看得清）。 */
+export const INK_SHAPE_FILL_ALPHA = 0.45;
+/** 形状填充默认色：荧光黄。 */
+export const INK_SHAPE_DEFAULT_FILL = '#ffe94a';
+
+/** 是否是形状笔迹（shape 字段存在即视为形状；合法性由 sanitize 保证）。 */
+export function isShapeStroke(s: { shape?: InkStrokeShape }): boolean {
+	return s.shape !== undefined;
+}
+
+/**
+ * 形状笔迹的轮廓命中距离（PDF 用户空间）。橡皮 / 套索共用：
+ * 返回点到形状轮廓的近似最短距离，**形状内部返回到边界的深度**（正值），
+ * 这样橡皮贴着形状内部擦也算命中、套索圈选语义也直观。
+ * 非形状笔迹或点数不对返回 Infinity（永不命中）。
+ */
+export function shapeOutlineDistance(s: InkStroke, x: number, y: number): number {
+	if (!s.shape || s.pts.length !== 6) return Infinity;
+	const x0 = s.pts[0];
+	const y0 = s.pts[1];
+	const x1 = s.pts[3];
+	const y1 = s.pts[4];
+	if (s.shape === 'line') {
+		return Math.sqrt(distPtSegSq(x, y, x0, y0, x1, y1));
+	}
+	const cx = (x0 + x1) / 2;
+	const cy = (y0 + y1) / 2;
+	const hw = Math.abs(x1 - x0) / 2;
+	const hh = Math.abs(y1 - y0) / 2;
+	if (s.shape === 'rect') {
+		const dx = Math.max(Math.abs(x - cx) - hw, 0);
+		const dy = Math.max(Math.abs(y - cy) - hh, 0);
+		if (dx > 0 || dy > 0) return Math.hypot(dx, dy);
+		// 内部：到四边最近距离
+		return Math.min(hw - Math.abs(x - cx), hh - Math.abs(y - cy));
+	}
+	// ellipse：单位圆空间求 e，边界 e=1；距离用梯度法近似
+	//（橡皮命中只需区分「贴边 / 在内 / 很远」，近似误差远小于笔宽余量）。
+	if (hw <= 0 || hh <= 0) return Math.hypot(x - cx, y - cy);
+	const ex = (x - cx) / hw;
+	const ey = (y - cy) / hh;
+	const e = Math.hypot(ex, ey);
+	// 梯度模长（把 e 的偏差换算回真实距离的分母）
+	const g = Math.hypot(ex / hw, ey / hh);
+	if (g < 1e-12) return Math.min(hw, hh); // 中心点
+	const approx = Math.abs(e - 1) / g;
+	if (e >= 1) {
+		// 梯度近似在远点会低估（法线方向随位置转）：补欧氏下界取大者
+		return Math.max(approx, Math.hypot(x - cx, y - cy) - Math.max(hw, hh));
+	}
+	return approx;
+}
+
+/** 点到线段的最短距离平方。 */
+function distPtSegSq(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+	const dx = bx - ax;
+	const dy = by - ay;
+	const lenSq = dx * dx + dy * dy;
+	let t = 0;
+	if (lenSq > 0) t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+	const cx = ax + t * dx;
+	const cy = ay + t * dy;
+	return (px - cx) * (px - cx) + (py - cy) * (py - cy);
+}
+
+/**
+ * 形状笔迹的圈选采样点（扁平 [x, y, ...]）：只采**轮廓**。
+ * 两点形状光靠顶点在框内会选不中大形状（框只套住一条边 / 中段时顶点都在框外），
+ * 圈选必须沿轮廓采样。与橡皮同语义：形状内部不算命中（深部空框选不中大形状）。
+ * 非形状笔迹返回 []。
+ */
+export function shapeHitPoints(s: InkStroke): number[] {
+	if (!s.shape || s.pts.length !== 6) return [];
+	const x0 = s.pts[0];
+	const y0 = s.pts[1];
+	const x1 = s.pts[3];
+	const y1 = s.pts[4];
+	const out: number[] = [x0, y0, x1, y1];
+	if (s.shape === 'line') {
+		// 两端点 + 中点
+		out.push((x0 + x1) / 2, (y0 + y1) / 2);
+		return out;
+	}
+	const cx = (x0 + x1) / 2;
+	const cy = (y0 + y1) / 2;
+	if (s.shape === 'rect') {
+		// 4 角（已有）+ 4 边中点
+		out.push(cx, y0, cx, y1, x0, cy, x1, cy);
+		return out;
+	}
+	// ellipse：4 顶点（已有）+ 4 个 45° 点
+	const rx = Math.abs(x1 - x0) / 2;
+	const ry = Math.abs(y1 - y0) / 2;
+	const k = Math.SQRT1_2;
+	out.push(cx + rx * k, cy - ry * k, cx + rx * k, cy + ry * k, cx - rx * k, cy + ry * k, cx - rx * k, cy - ry * k);
+	return out;
+}
+
+
 /**
  * 一条笔迹。
  *
@@ -60,6 +169,18 @@ export interface InkStroke {
 	 * 缺省（旧数据、正常一笔写完）= 连续折线，渲染结果与 1.7.6 逐字节一致。
 	 */
 	gaps?: number[];
+	/**
+	 * 形状工具笔迹的种类（1.9.x 起）。有 shape 的笔迹 pts 恒为 2 个点：
+	 * rect / ellipse = 对角两点，line = 两端点（PDF 用户空间，与自由笔迹同空间）。
+	 * 缺省 = 普通自由笔迹。
+	 */
+	shape?: InkStrokeShape;
+	/**
+	 * 形状填充色（仅 rect / ellipse 有意义；line 无填充）。
+	 * null = 无填充；十六进制 hex 字符串。填充按 INK_SHAPE_FILL_ALPHA 半透明画，
+	 * 下方正文看得清（荧光笔语义）。
+	 */
+	fill?: string | null;
 }
 
 /** 点 i 是否是一条子路径的起点（即 i-1 → i 这段不落墨）。 */

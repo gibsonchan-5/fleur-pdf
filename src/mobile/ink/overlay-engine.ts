@@ -35,10 +35,15 @@ import type { App } from 'obsidian';
 import {
 	addStrokeGap,
 	hasGapBefore,
+	isShapeStroke,
 	mintStrokeId,
+	shapeHitPoints,
+	shapeOutlineDistance,
 	subpathStartAt,
+	INK_SHAPE_FILL_ALPHA,
 	type InkStroke,
 	type InkStrokeKind,
+	type InkStrokeShape,
 } from './strokes';
 import {
 	angleBetweenDeg,
@@ -177,6 +182,8 @@ export interface SnapRect {
 /** 工具状态。pen/marker 二合一（kind 区分），橡皮带半径（PDF 用户空间单位）。 */
 export type InkTool =
 	| { mode: 'pen'; color: string; width: number; opacity: number; kind: InkStrokeKind }
+	// 形状：拖对角两点落一个 rect / ellipse，拖两端点落 line；fill=null 无填充
+	| { mode: 'shape'; shape: InkStrokeShape; color: string; width: number; fill: string | null }
 	| { mode: 'eraser'; radius: number }
 	| { mode: 'lasso' }
 	// 局部截图：拖矩形 → 抬手回调 onSnap（不产生任何笔迹数据）
@@ -325,6 +332,8 @@ function distPointToSegmentSq(
  * 无断点时判定路径与旧实现等价（可见段一个不少、一个不多）。
  */
 function strokeHitsCircle(s: InkStroke, cx: number, cy: number, r: number): boolean {
+	// 形状笔迹：整体单元，碰轮廓（含形状内部深度）即整条删，不做分段剖切
+	if (isShapeStroke(s)) return shapeOutlineDistance(s, cx, cy) <= r + s.width / 2;
 	const rr = (r + s.width / 2) * (r + s.width / 2);
 	const n = s.pts.length / 3;
 	if (n === 1) {
@@ -1326,7 +1335,7 @@ export class InkOverlayEngine {
 		//     那条通道是误触修复的一部分，动它就是把「之前发现的误触问题」请回来。
 		//   · 幽灵抬笔通道（pointerup）：按物理证据判 bridge / gap / commit，
 		//     归并语义与「那段画不画」解耦（见 grace-merge.ts 文件头）。
-		if (this.active && this.cancelTimer !== null && this.active.stroke) {
+		if (this.active && this.cancelTimer !== null && this.active.stroke && this.active.tool.mode === 'pen') {
 			const g = this.active;
 			const stroke = g.stroke!;
 			const css = this.clientToCss(g.surface, e.clientX, e.clientY);
@@ -1462,6 +1471,18 @@ export class InkOverlayEngine {
 
 		if (g.tool.mode === 'pen') {
 			this.appendDrawEvent(e);
+			return;
+		}
+		if (g.tool.mode === 'shape') {
+			// 形状：只追对角点，draft 上整形重画预览（合帧由 drawShapePreview 的
+			// 每次重画即一帧的量级兜住 —— 两点形状没有逐点增量的需求）
+			const sf = g.surface;
+			const css = this.clientToCss(sf, e.clientX, e.clientY);
+			const pdf = this.cssToPdf(sf, css.x, css.y);
+			if (!pdf) return;
+			g.lastRaw = pdf;
+			g.moved = true;
+			this.drawShapePreview(sf, g.stroke!, pdf);
 			return;
 		}
 		if (g.tool.mode === 'scroll') {
@@ -1800,6 +1821,22 @@ export class InkOverlayEngine {
 			g.renderedCount = 1;
 			// 单点也先画出来（点住不动的墨点）
 			this.renderLiveIncrement(g);
+		} else if (tool.mode === 'shape') {
+			// 形状：起点即对角一隅；宽度/颜色随当前参数，填充随形状工具自己的色板。
+			// 抬手前只有 1 个点，不渲染、不进 undo —— 预览由 drawShapePreview 画。
+			g.stroke = {
+				id: mintStrokeId(),
+				page: sf.page,
+				color: tool.color,
+				width: tool.width,
+				opacity: 1,
+				kind: 'pen',
+				shape: tool.shape,
+				fill: tool.fill,
+				pts: [pdf.x, pdf.y, 0.5],
+				t: Date.now(),
+			};
+			g.lastRaw = pdf;
 		} else if (tool.mode === 'eraser') {
 			g.eraseChanged = this.eraseAt(sf, pdf.x, pdf.y, tool.radius);
 			this.drawEraserCursor(sf, css.x, css.y);
@@ -1896,6 +1933,30 @@ export class InkOverlayEngine {
 				this.emitChange();
 			} else if (stroke.kind === 'marker') {
 				this.clearDraft(sf);
+			}
+			return;
+		}
+
+		if (g.tool.mode === 'shape') {
+			this.clearDraft(sf);
+			const stroke = g.stroke;
+			if (commit && stroke && g.lastRaw && g.moved) {
+				// 过小的拖动（误触/点按）不成形状，与 snap 同一视口判据
+				const vp = this.viewportFor(sf.page);
+				const minPdf = vp ? 6 / vp.scale : 4;
+				const w = Math.abs(g.lastRaw.x - stroke.pts[0]);
+				const h = Math.abs(g.lastRaw.y - stroke.pts[1]);
+				if (Math.hypot(w, h) >= minPdf) {
+					stroke.pts = [stroke.pts[0], stroke.pts[1], 0.5, g.lastRaw.x, g.lastRaw.y, 0.5];
+					this.pushUndo(g.snapshot);
+					const list = this.pages.get(sf.page);
+					if (list) list.push(stroke);
+					else this.pages.set(sf.page, [stroke]);
+					// 形状全程只画在 draft（预览），提交时一次性画进 committed ——
+					// 与 marker 同款：不补这一笔，形状要等下一次重绘才现身
+					this.paintStroke(sf.cctx, sf, stroke);
+					this.emitChange();
+				}
 			}
 			return;
 		}
@@ -2351,6 +2412,18 @@ export class InkOverlayEngine {
 		const y1 = Math.max(a.y, b.y);
 		const ids = new Set<string>();
 		for (const s of list) {
+			// 形状笔迹：沿轮廓采样 + 中心判命中 —— 两点形状光靠顶点在框内，
+			// 框只套住一条边/中段时永远选不中大形状
+			if (isShapeStroke(s)) {
+				const hp = shapeHitPoints(s);
+				for (let i = 0; i < hp.length; i += 2) {
+					if (hp[i] >= x0 && hp[i] <= x1 && hp[i + 1] >= y0 && hp[i + 1] <= y1) {
+						ids.add(s.id);
+						break;
+					}
+				}
+				continue;
+			}
 			const n = s.pts.length / 3;
 			for (let i = 0; i < n; i++) {
 				const x = s.pts[i * 3];
@@ -2430,6 +2503,10 @@ export class InkOverlayEngine {
 		s: InkStroke,
 		vpIn?: any,
 	): void {
+		if (s.shape) {
+			this.paintShapeStroke(ctx, sf, s, vpIn);
+			return;
+		}
 		if (s.kind === 'marker') {
 			this.paintMarkerPath(ctx, sf, s);
 			return;
@@ -2469,6 +2546,64 @@ export class InkOverlayEngine {
 			}
 		}
 		ctx.restore();
+	}
+
+	/**
+	 * 形状笔迹渲染：填充（半透明荧光笔语义）+ 描边（笔色笔宽）两趟。
+	 * 预览与提交走同一函数 —— 抬手落下的形状与拖拽过程看到的一致。
+	 */
+	private paintShapeStroke(
+		ctx: CanvasRenderingContext2D,
+		sf: Surface,
+		s: InkStroke,
+		vpIn?: any,
+		endOverride?: { x: number; y: number },
+	): void {
+		const vp = vpIn ?? this.viewportFor(sf.page);
+		if (!vp || s.pts.length < 3) return;
+		const scale = vp.scale;
+		const a = this.pdfToCss(sf, s.pts[0], s.pts[1], vp);
+		const bx = endOverride ? endOverride.x : s.pts[3];
+		const by = endOverride ? endOverride.y : s.pts[4];
+		const b = this.pdfToCss(sf, bx, by, vp);
+		if (!a || !b) return;
+		ctx.save();
+		ctx.lineCap = 'round';
+		ctx.lineJoin = 'round';
+		ctx.strokeStyle = s.color;
+		ctx.lineWidth = Math.max(0.5, s.width * scale);
+		if (s.shape === 'line') {
+			ctx.beginPath();
+			ctx.moveTo(a.x, a.y);
+			ctx.lineTo(b.x, b.y);
+			ctx.stroke();
+		} else {
+			const x = Math.min(a.x, b.x);
+			const y = Math.min(a.y, b.y);
+			const w = Math.abs(b.x - a.x);
+			const h = Math.abs(b.y - a.y);
+			ctx.beginPath();
+			if (s.shape === 'rect') {
+				ctx.rect(x, y, w, h);
+			} else {
+				ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+			}
+			if (s.fill) {
+				// 填充半透明（荧光笔语义：下方正文看得清），描边恒全不透明
+				ctx.globalAlpha = INK_SHAPE_FILL_ALPHA;
+				ctx.fillStyle = s.fill;
+				ctx.fill();
+				ctx.globalAlpha = 1;
+			}
+			ctx.stroke();
+		}
+		ctx.restore();
+	}
+
+	/** 形状拖拽预览：清 draft、用当前对角点重画。 */
+	private drawShapePreview(sf: Surface, stroke: InkStroke, end: { x: number; y: number }): void {
+		this.clearDraft(sf);
+		this.paintShapeStroke(sf.dctx, sf, stroke, undefined, end);
 	}
 
 	private clearDraft(sf: Surface): void {

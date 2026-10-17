@@ -128,6 +128,13 @@ Stylus ink is rendered on the plugin's own overlay canvases and persisted in a s
   passing the ruler shows as a thin line there. Works with pen and highlighter; strokes away from the ruler
   are unaffected. Toggle the icon again to hide it. The ruler is session-only (not a setting) and the
   resulting straight strokes are ordinary ink — undo, eraser, sync and export all behave as usual.
+- **Shapes** (pen bar → shapes icon): drag to place a rectangle, ellipse or straight line (pick the
+  kind in the shape flyout). Rectangles and ellipses can take a translucent highlighter-style fill
+  from the palette (fluorescent yellow by default; "no fill" for outline only); the outline follows
+  the shape tool's own color/width (both editable from the usual color and size buttons while the
+  shape tool is active). Shapes are ordinary strokes: a tap won't create one (drag required), the
+  eraser deletes a whole shape when it touches its outline, the lasso selects and moves them as a
+  unit, and undo/sync work as usual.
 - **Stroke-break / lag diagnostics** (command palette → 「手写断触诊断」, mobile only): a passive,
   command-gated recorder that samples pointer and touch timing plus frame gaps while you write, and
   saves them to `FleurPDF/ink-debug.json` and `FleurPDF/ink-debug.md` inside your vault.
@@ -369,6 +376,10 @@ PDF、每次批注落盘、检测到副本变更；编辑冲突按修改时刻�
   且整条墨落在尺子外侧，只留一道小缝贴着尺沿，尺身不遮墨。钢笔 / 荧光笔都可用，离尺
   较远的笔迹不受影响。再点一次图标即收起。直尺是会话内的（不进设置），画出的直线就是普通笔迹 ——
   撤销、橡皮、同步、导出一律按普通笔迹处理。
+- **形状**（笔盒 → 形状图标）：拖拽画出矩形、圆形或直线（形状在弹层里三选一）。矩形和圆形
+  可从色板选半透明荧光笔式填充（默认荧光黄，也可选「无填充」只描边）；描边颜色与粗细用形状
+  工具自己的参数（形状模式激活时，笔盒的颜色 / 粗细按钮改的就是它）。形状就是普通笔迹：
+  点按不成形（必须拖拽）、橡皮碰到轮廓整条删、套索整体圈选平移，撤销 / 同步照常。
 - **断触 / 卡顿诊断**（命令面板 → 「手写断触诊断」，仅移动端）：一个被命令开关的被动记录器，
   在你书写期间采样指针/触摸时序与帧间隔，写入 vault 内的 `FleurPDF/ink-debug.json` 与
   `FleurPDF/ink-debug.md`。**这两个文件只落在本机，插件不上传任何内容，也没有遥测。**

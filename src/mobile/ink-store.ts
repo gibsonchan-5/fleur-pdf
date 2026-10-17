@@ -20,7 +20,7 @@
 //   v2 —— 0.6.0 起：自有笔迹模型（PDF 用户空间）。
 
 import { App, TFile, normalizePath } from 'obsidian';
-import { compactStroke, sanitizeGaps, type InkStroke, type V1InkEntry } from './ink/strokes';
+import { compactStroke, isInkShape, sanitizeGaps, type InkStroke, type InkStrokeShape, type V1InkEntry } from './ink/strokes';
 
 /** 笔迹数据目录（vault 内相对路径）。点开头 → 不进 Obsidian 文件索引。 */
 export const INK_DATA_DIR = '.fleur-pdf/ink';
@@ -217,7 +217,7 @@ export function sanitizeStrokes(raw: unknown): InkStroke[] {
 	const out: InkStroke[] = [];
 	for (const s of raw) {
 		if (!s || typeof s !== 'object') continue;
-		const { id, page, color, width, opacity, kind, pts, t, gaps } = s as Record<string, unknown>;
+		const { id, page, color, width, opacity, kind, pts, t, gaps, shape, fill } = s as Record<string, unknown>;
 		if (typeof id !== 'string' || !id) continue;
 		if (typeof page !== 'number' || !(page >= 1)) continue;
 		if (typeof color !== 'string') continue;
@@ -225,7 +225,18 @@ export function sanitizeStrokes(raw: unknown): InkStroke[] {
 		if (kind !== 'pen' && kind !== 'marker') continue;
 		if (!Array.isArray(pts) || pts.length < 6 || pts.length % 3 !== 0) continue;
 		if (pts.some((v) => typeof v !== 'number' || !Number.isFinite(v))) continue;
-		out.push({
+		// 形状字段必须显式进白名单，否则落盘 / 跨端合并会静默抹掉它（gaps 的教训）。
+		// shape 笔迹的点数恒为 2 点（6 个数）；不满足（类型坏 / 点数不对）时丢弃
+		// shape 降级为普通笔迹 —— 丢形状标记只是少个形状，不能丢用户的笔迹本体。
+		let shapeV: InkStrokeShape | undefined;
+		let fillV: string | null | undefined;
+		if (shape !== undefined && isInkShape(shape) && pts.length === 6) {
+			shapeV = shape;
+			if (fill === null) fillV = null;
+			else if (typeof fill === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(fill)) fillV = fill;
+			else fillV = null; // 非法填充当无填充，不丢形状
+		}
+		const outStroke: InkStroke = {
 			id,
 			page,
 			color,
@@ -239,7 +250,12 @@ export function sanitizeStrokes(raw: unknown): InkStroke[] {
 			// 换台机器又回来」。结构不合法时 sanitizeGaps 返回 undefined（丢断点
 			// 不丢笔迹）。
 			gaps: sanitizeGaps(gaps, pts.length / 3),
-		});
+		};
+		if (shapeV) {
+			outStroke.shape = shapeV;
+			outStroke.fill = fillV ?? null;
+		}
+		out.push(outStroke);
 	}
 	return out;
 }
