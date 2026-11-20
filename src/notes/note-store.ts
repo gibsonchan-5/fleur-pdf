@@ -1,8 +1,10 @@
 // 便签（贴页备忘录）的持久化。
 //
-// 数据落点：`.obsidian/plugins/<id>/data/notes-<路径hash>.json`，按 PDF 路径 keyed。
-//   · 与 AnnotationStore 同目录但文件名带 `notes-` 前缀 —— 两者的路径 hash 算法相同
-//     （非字母数字 → '_'），不加前缀会互相覆盖。
+// 数据落点：`.obsidian/plugins/<id>/data/notes-<64 位路径哈希>.json`，按 PDF 路径 keyed。
+//   · 与 AnnotationStore 同目录但文件名带 `notes-` 前缀（批注是 `ann-`）。
+//   · 旧版用的是「非字母数字一律 → _」的有损键，中文等长书名会撞成同一份文件
+//     （便签串书）；新键改为 djb2+FNV-1a 的 64 位哈希，旧的按 `file` 字段
+//     精确匹配做一次性迁移（见 load）。
 //   · 刻意不放 vault（区别于 ink sidecar）：便签是低频写、小体量的用户笔记附件，
 //     跟 data.json 一样随配置目录走即可，不需要跨设备实时同步语义。
 //
@@ -86,6 +88,32 @@ export function sanitizeNotes(raw: unknown): PDFNote[] {
   return out;
 }
 
+/**
+ * 路径 → sidecar 键（与 store.ts 的 stableKey 同款：djb2 + FNV-1a 拼 64 位）。
+ * 旧实现是「非字母数字一律 → _」，中文等长书名会撞到同一份 json（便签会串书）；
+ * 这里复制一份保持模块独立（annotation-sync 同样做法）。
+ */
+function stableKey(s: string): string {
+  let h1 = 5381;
+  let h2 = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    h1 = ((h1 << 5) + h1 + c) | 0;
+    h2 = Math.imul(h2 ^ c, 0x01000193) >>> 0;
+  }
+  return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36);
+}
+
+/** 便签 sidecar 文件名（不含 .json），前缀避开批注的 `ann-`。 */
+export function notesKey(pdfPath: string): string {
+  return `notes-${stableKey(pdfPath)}`;
+}
+
+/** 旧版有损键（仅用于一次性迁移）。 */
+export function legacyNotesKey(pdfPath: string): string {
+  return `notes-${pdfPath.replace(/[^a-zA-Z0-9]/g, '_')}`;
+}
+
 export class NoteStore {
   private baseDir: string;
 
@@ -93,29 +121,65 @@ export class NoteStore {
     this.baseDir = `${app.vault.configDir}/plugins/${pluginId}/data`;
   }
 
-  /** `<configDir>/plugins/<id>/data/notes-<hash>.json`（前缀避开 AnnotationStore 同名文件）。 */
+  /** `<configDir>/plugins/<id>/data/notes-<64 位哈希>.json`（前缀避开 AnnotationStore）。 */
   pathFor(pdfPath: string): string {
-    const hash = pdfPath.replace(/[^a-zA-Z0-9]/g, '_');
-    return normalizePath(`${this.baseDir}/notes-${hash}.json`);
+    return normalizePath(`${this.baseDir}/${notesKey(pdfPath)}.json`);
   }
 
-  /** 读取。任何异常（不存在 / JSON 损坏 / 版本不认识）都回退为空数据，绝不抛。 */
-  async load(pdfPath: string): Promise<NotesData> {
+  /** 旧版有损键对应的路径（只读不写，迁移用）。 */
+  private legacyPathFor(pdfPath: string): string {
+    return normalizePath(`${this.baseDir}/${legacyNotesKey(pdfPath)}.json`);
+  }
+
+  /**
+   * 读取并校验归属：payload 的 `file` 必须精确等于 pdfPath。
+   * 归属不符（旧版撞键共享 / 手工拷贝）→ null，绝不认领另一本书的便签。
+   */
+  private async readOwned(filePath: string, pdfPath: string): Promise<NotesData | null> {
     const adapter = this.app.vault.adapter;
-    const filePath = this.pathFor(pdfPath);
     try {
-      if (!(await adapter.exists(filePath))) return { notes: [], exportPath: '' };
+      if (!(await adapter.exists(filePath))) return null;
       const parsed = JSON.parse(await adapter.read(filePath));
-      if (!parsed || typeof parsed !== 'object' || parsed.version !== 1) {
-        return { notes: [], exportPath: '' };
+      if (!parsed || typeof parsed !== 'object' || parsed.version !== 1) return null;
+      if (parsed.file !== pdfPath) {
+        console.warn('[FleurPDF] 便签 sidecar 归属不符，已忽略', filePath, '记录归属:', parsed.file, '当前文件:', pdfPath);
+        return null;
       }
       return {
         notes: sanitizeNotes(parsed.notes),
         exportPath: typeof parsed.exportPath === 'string' ? parsed.exportPath : '',
       };
     } catch {
-      return { notes: [], exportPath: '' };
+      return null;
     }
+  }
+
+  /** 读取。任何异常（不存在 / JSON 损坏 / 版本不认识）都回退为空数据，绝不抛。 */
+  async load(pdfPath: string): Promise<NotesData> {
+    const adapter = this.app.vault.adapter;
+    const own = await this.readOwned(this.pathFor(pdfPath), pdfPath);
+    if (own) return own;
+    if (await adapter.exists(this.pathFor(pdfPath))) return { notes: [], exportPath: '' };
+
+    // 一次性迁移：只认领归属精确匹配的旧键文件；撞键共享的旧文件不认领、不删除
+    const legacyPath = this.legacyPathFor(pdfPath);
+    const legacy = await this.readOwned(legacyPath, pdfPath);
+    if (!legacy) return { notes: [], exportPath: '' };
+    try {
+      if (!(await adapter.exists(this.baseDir))) await adapter.mkdir(this.baseDir);
+      await adapter.write(this.pathFor(pdfPath), JSON.stringify({
+        version: 1,
+        file: pdfPath,
+        updated: Date.now(),
+        notes: legacy.notes,
+        exportPath: legacy.exportPath,
+      }));
+      await adapter.remove(legacyPath);
+      console.debug('[FleurPDF] 便签 sidecar 已迁移到新键', pdfPath);
+    } catch (e) {
+      console.warn('[FleurPDF] 便签 sidecar 迁移失败（旧键保留，下次重试）', pdfPath, e);
+    }
+    return legacy;
   }
 
   /** 覆盖写入；便签全删且没有导出记录时直接删文件（不留空壳）。 */
@@ -144,6 +208,16 @@ export class NoteStore {
       if (await adapter.exists(filePath)) await adapter.remove(filePath);
     } catch {
       /* 删不掉不影响使用，下次 save 会覆盖 */
+    }
+    // 旧键文件若归属本文件，一并删除 —— 否则下次 load 会把它迁移回来（删除后复活）。
+    // 归属别家的撞键旧文件不动。
+    const legacyPath = this.legacyPathFor(pdfPath);
+    try {
+      if (!(await adapter.exists(legacyPath))) return;
+      const parsed = JSON.parse(await adapter.read(legacyPath));
+      if (parsed?.file === pdfPath) await adapter.remove(legacyPath);
+    } catch {
+      /* 同样忽略 */
     }
   }
 }
