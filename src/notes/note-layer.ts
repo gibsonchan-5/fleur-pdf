@@ -458,17 +458,67 @@ export class NoteLayer {
     void this.persist();
   }
 
+  /* ------------------------------ 视口换算 ------------------------------ */
+
+  /** 从页元素向上找真正的滚动容器（pdf.js 的 #viewerContainer / .pdfViewer）。 */
+  private scrollHostOf(from: HTMLElement): HTMLElement | null {
+    const doc = from.ownerDocument;
+    let el: HTMLElement | null = from.parentElement;
+    while (el && el !== doc.body) {
+      if (el.scrollHeight > el.clientHeight + 2) {
+        const ov = getComputedStyle(el).overflowY;
+        if (ov === 'auto' || ov === 'scroll' || ov === 'overlay') return el;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  }
+
+  /**
+   * 阅读区真正的可见矩形（client 坐标）。
+   *
+   * ⚠️ 不能直接用全局 window：PDF 可能开在弹出窗（popout）里，window.innerHeight
+   * 与它无关，会把「可见页」算成第一页 —— 贴便签时页面就整个跳回第一页。
+   */
+  private viewportRectOf(from: HTMLElement): { top: number; left: number; bottom: number; right: number } {
+    const win = from.ownerDocument?.defaultView ?? window;
+    const host = this.scrollHostOf(from);
+    if (host) {
+      const r = host.getBoundingClientRect();
+      return { top: r.top, left: r.left, bottom: r.bottom, right: r.right };
+    }
+    return { top: 0, left: 0, bottom: win.innerHeight, right: win.innerWidth };
+  }
+
+  /** 该页当前真正露在视口里的部分（页内坐标 @scale=1）；完全不可见时 null。 */
+  private visibleAreaOf(sf: PageSurface, scale: number): { x: number; y: number; w: number; h: number } | null {
+    const page = sf.el.getBoundingClientRect();
+    const vp = this.viewportRectOf(sf.el);
+    const left = Math.max(page.left, vp.left);
+    const right = Math.min(page.right, vp.right);
+    const top = Math.max(page.top, vp.top);
+    const bottom = Math.min(page.bottom, vp.bottom);
+    if (right - left <= 0 || bottom - top <= 0) return null;
+    return {
+      x: (left - page.left) / scale,
+      y: (top - page.top) / scale,
+      w: (right - left) / scale,
+      h: (bottom - top) / scale,
+    };
+  }
+
   /** 当前视口里最靠中间的一页（找不到就退回第一页）。 */
   private visiblePage(): number {
     if (!this.root) return 1;
-    const midY = window.innerHeight / 2;
+    const vp = this.viewportRectOf(this.root);
+    const midY = (vp.top + vp.bottom) / 2;
     let best = 1;
     let bestDist = Infinity;
     for (const el of Array.from(this.root.querySelectorAll<HTMLElement>('.page[data-page-number]'))) {
       const n = Number(el.dataset.pageNumber);
       if (!Number.isFinite(n) || n < 1) continue;
       const r = el.getBoundingClientRect();
-      if (r.bottom < 0 || r.top > window.innerHeight) continue;
+      if (r.bottom < vp.top || r.top > vp.bottom) continue;
       const dist = Math.abs((r.top + r.bottom) / 2 - midY);
       if (dist < bestDist) {
         bestDist = dist;
@@ -478,7 +528,14 @@ export class NoteLayer {
     return best;
   }
 
-  /** 在可见页中心新建便签并直接进入编辑。 */
+  /**
+   * 在「眼睛正在看的那块」中心新建便签并直接进入编辑。
+   *
+   * ⚠️ 不能按整页中心贴：整页常常比视口高，页面中心落在屏幕外，随后
+   * textarea.focus() 会把它滚进视野 —— 表现就是「贴便条时 PDF 页面跳一下」
+   * （越是在页面下缘做批注，跳得越远）。按可见区中心贴 + 无滚动聚焦，
+   * 这个位移就不存在了。
+   */
   async addNote(): Promise<void> {
     if (!this.enabled) return;
     if (!this.pdfPath || !this.root) await this.sync();
@@ -491,16 +548,21 @@ export class NoteLayer {
     const scale = this.scaleFor(page);
     let pageW = NOTE_DEFAULT_W + 80;
     let pageH = NOTE_DEFAULT_H + 80;
+    let area: { x: number; y: number; w: number; h: number } | null = null;
     if (sf) {
       const size = this.pageSize(sf, scale);
       pageW = size.w;
       pageH = size.h;
+      area = this.visibleAreaOf(sf, scale);
     }
+    const cx = area ? area.x + area.w / 2 : pageW / 2;
+    const cy = area ? area.y + area.h / 2 : pageH / 2;
     const note: PDFNote = {
       id: mintNoteId(),
       page,
-      x: Math.max(0, (pageW - NOTE_DEFAULT_W) / 2),
-      y: Math.max(0, (pageH - NOTE_DEFAULT_H) / 2),
+      // 夹进页内：可见区可能贴页边，减半宽高会出负值，越界就落到页外看不见了
+      x: Math.max(0, Math.min(cx - NOTE_DEFAULT_W / 2, Math.max(0, pageW - NOTE_DEFAULT_W))),
+      y: Math.max(0, Math.min(cy - NOTE_DEFAULT_H / 2, Math.max(0, pageH - NOTE_DEFAULT_H))),
       w: NOTE_DEFAULT_W,
       h: NOTE_DEFAULT_H,
       text: '',
@@ -510,7 +572,33 @@ export class NoteLayer {
     this.renderPage(page);
     await this.persist();
     const dom = this.surfaces.get(page)?.notes.get(note.id);
-    (dom?.querySelector('.fleur-pdf-note-text') as HTMLTextAreaElement | null)?.focus();
+    this.focusNote(dom?.querySelector<HTMLTextAreaElement>('.fleur-pdf-note-text'), sf);
+  }
+
+  /**
+   * 聚焦新便签正文，但绝不因此滚动页面。
+   *
+   * focus() 默认带 scrollIntoView 语义（把元素滚进视野），落在 pdf.js 的
+   * #viewerContainer 上就是整页平移。便签已经贴在可见区中心、本来就在视野内，
+   * 这层滚动纯属副作用；preventScroll 关掉它，再兜一帧把滚动位置放回原处
+   * （Obsidian/pdf.js 内部若有 focusin 顺带滚动也只回滚这一帧，用户之后的滚动照常）。
+   */
+  private focusNote(ta: HTMLTextAreaElement | null | undefined, sf: PageSurface | undefined): void {
+    if (!ta) return;
+    const host = sf ? this.scrollHostOf(sf.el) : null;
+    const top = host?.scrollTop ?? 0;
+    const left = host?.scrollLeft ?? 0;
+    try {
+      ta.focus({ preventScroll: true });
+    } catch {
+      ta.focus();
+    }
+    if (!host) return;
+    const win = host.ownerDocument?.defaultView ?? window;
+    win.requestAnimationFrame(() => {
+      if (host.scrollTop !== top) host.scrollTop = top;
+      if (host.scrollLeft !== left) host.scrollLeft = left;
+    });
   }
 
   /* ------------------------------ 落盘 ------------------------------ */
