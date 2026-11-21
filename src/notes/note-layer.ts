@@ -17,6 +17,7 @@
 
 import { Notice, setIcon } from 'obsidian';
 import type FleurPDFPlugin from '../main';
+import { NoteArrowKeyGuard } from './note-keys';
 import {
   mintNoteId,
   NOTE_DEFAULT_H,
@@ -53,9 +54,13 @@ export class NoteLayer {
   private domObs: MutationObserver | null = null;
   private reconcileTimer: number | null = null;
   private syncTimer: number | null = null;
+  /** 便签正文聚焦期间接管左右键（Obsidian PDF 视图漏判 TEXTAREA，见 note-keys.ts）。 */
+  private keyGuard: NoteArrowKeyGuard;
 
   constructor(private plugin: FleurPDFPlugin) {
     this.store = new NoteStore(plugin.app, plugin.manifest.id);
+    this.keyGuard = new NoteArrowKeyGuard(plugin.app);
+    plugin.register(() => this.keyGuard.release());
     const ws = plugin.app.workspace;
     const on = () => {
       if (this.enabled) this.scheduleSync();
@@ -135,6 +140,7 @@ export class NoteLayer {
 
   /** 关开关 / 解析失败：只拆 DOM 与观察者，数据留在内存与 sidecar。 */
   detachAll(): void {
+    this.keyGuard.release();
     if (this.reconcileTimer !== null) {
       window.clearTimeout(this.reconcileTimer);
       this.reconcileTimer = null;
@@ -204,9 +210,22 @@ export class NoteLayer {
   private unmountSurface(page: number): void {
     const sf = this.surfaces.get(page);
     if (!sf) return;
+    // 被拆的层里若是正在输入的便签，blur 不一定来得及触发 —— 主动归还左右键
+    this.releaseGuardIfFocusWithin(sf.layer);
     sf.resizeObs.disconnect();
     sf.layer.remove();
     this.surfaces.delete(page);
+  }
+
+  /**
+   * 接管中的左右键只对「仍然存在的便签输入框」有意义。
+   * 节点被销毁（重挂页 / 缩放 / 切文件）时 blur 可能不派发，这里兜底释放；
+   * 只影响焦点确实落在该子树内的情况，别页重画不会误伤正在输入的那张便签。
+   */
+  private releaseGuardIfFocusWithin(node: Node | null): void {
+    if (!this.keyGuard.active || !node) return;
+    const ae = this.root?.ownerDocument?.activeElement ?? null;
+    if (ae && node.contains(ae)) this.keyGuard.release();
   }
 
   /* ------------------------------ 几何换算 ------------------------------ */
@@ -268,6 +287,7 @@ export class NoteLayer {
   private renderPage(page: number): void {
     const sf = this.surfaces.get(page);
     if (!sf) return;
+    this.releaseGuardIfFocusWithin(sf.layer);
     sf.layer.empty();
     sf.notes.clear();
     const scale = this.scaleFor(page);
@@ -318,6 +338,15 @@ export class NoteLayer {
       note.text = ta.value;
     });
     ta.addEventListener('blur', () => void this.persist());
+    // 输入期间左右键归光标：Obsidian PDF 视图的翻页守卫漏了 TEXTAREA，
+    // 焦点进来时压入自己的 Scope（返回 true，不 preventDefault），离开即归还。
+    ta.addEventListener('focus', () => this.keyGuard.acquire());
+    ta.addEventListener('blur', () => {
+      // 焦点落在另一张便签上时保持接管（blur 先于 focus 时也不会漏）
+      const ae = ta.ownerDocument?.activeElement as HTMLElement | null;
+      if (ae && ae.closest?.('.fleur-pdf-note')) return;
+      this.keyGuard.release();
+    });
     // 文本编辑区的指针事件不外溢（pdf.js / patcher 都不该看到它）；
     // 手写模式下 pen/手指要外溢给引擎落墨，只有鼠标（或编辑模式）才吞掉
     ta.addEventListener('pointerdown', (e) => {
